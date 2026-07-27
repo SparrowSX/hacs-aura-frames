@@ -1,17 +1,17 @@
 {
   "domain": "aura_frames",
   "name": "Aura Frames",
+  "version": "0.0.1",
+  "config_flow": true,
+  "documentation": "https://github.com/SparrowSX/hacs-aura-frames",
+  "issue_tracker": "https://github.com/SparrowSX/hacs-aura-frames/issues",
   "codeowners": [
     "@SparrowSX"
   ],
-  "config_flow": true,
-  "documentation": "https://github.com/SparrowSX/hacs-aura-frames",
   "integration_type": "hub",
   "iot_class": "cloud_polling",
-  "issue_tracker": "https://github.com/SparrowSX/hacs-aura-frames/issues",
+  "requirements": [],
   "loggers": [
     "custom_components.aura_frames"
-  ],
-  "requirements": [],
-  "version": "0.1.0"
+  ]
 }
