@@ -1,0 +1,68 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "data": {
+          "email": "E-Mail-Adresse",
+          "password": "Passwort"
+        }
+      },
+      "frame": {
+        "title": "Bilderrahmen auswählen",
+        "description": "Wähle den hinzuzufügenden Aura-Bilderrahmen aus.",
+        "data": {
+          "frame_id": "Bilderrahmen"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Aura Frames erneut verbinden",
+        "description": "Die Aura-Anmeldedaten sind abgelaufen. Gib sie erneut ein, um die Verbindung wiederherzustellen.",
+        "data": {
+          "email": "E-Mail-Adresse",
+          "password": "Passwort"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Verbindung zu Aura nicht möglich.",
+      "invalid_auth": "E-Mail-Adresse oder Passwort ist ungültig.",
+      "no_frames": "Für dieses Konto wurden keine Aura-Bilderrahmen gefunden.",
+      "frame_not_found": "Der ausgewählte Aura-Bilderrahmen ist nicht mehr verfügbar."
+    },
+    "abort": {
+      "already_configured": "Dieser Aura-Bilderrahmen ist bereits eingerichtet.",
+      "reauth_successful": "Aura Frames wurde erfolgreich erneut verbunden."
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "online": {
+        "name": "Online"
+      }
+    },
+    "button": {
+      "next_photo": {
+        "name": "Nächstes Foto"
+      },
+      "previous_photo": {
+        "name": "Vorheriges Foto"
+      }
+    },
+    "sensor": {
+      "current_photo": {
+        "name": "Aktuelles Foto"
+      },
+      "num_assets": {
+        "name": "Fotoanzahl"
+      },
+      "wifi_network": {
+        "name": "WLAN-Netzwerk"
+      }
+    },
+    "switch": {
+      "display": {
+        "name": "Anzeige"
+      }
+    }
+  }
+}

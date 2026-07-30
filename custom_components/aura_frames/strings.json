@@ -1,0 +1,68 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "data": {
+          "email": "Email address",
+          "password": "Password"
+        }
+      },
+      "frame": {
+        "title": "Select frame",
+        "description": "Choose the Aura frame to add.",
+        "data": {
+          "frame_id": "Frame"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Reconnect Aura Frames",
+        "description": "Your Aura credentials have expired. Enter them again to reconnect.",
+        "data": {
+          "email": "Email address",
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Unable to connect to Aura.",
+      "invalid_auth": "Invalid email address or password.",
+      "no_frames": "No Aura frames were found for this account.",
+      "frame_not_found": "The selected Aura frame is no longer available."
+    },
+    "abort": {
+      "already_configured": "This Aura frame is already configured.",
+      "reauth_successful": "Aura Frames was reconnected successfully."
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "online": {
+        "name": "Online"
+      }
+    },
+    "button": {
+      "next_photo": {
+        "name": "Next photo"
+      },
+      "previous_photo": {
+        "name": "Previous photo"
+      }
+    },
+    "sensor": {
+      "current_photo": {
+        "name": "Current photo"
+      },
+      "num_assets": {
+        "name": "Photo count"
+      },
+      "wifi_network": {
+        "name": "Wi-Fi network"
+      }
+    },
+    "switch": {
+      "display": {
+        "name": "Display"
+      }
+    }
+  }
+}

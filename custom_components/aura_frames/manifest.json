@@ -1,0 +1,10 @@
+{
+  "domain": "aura_frames",
+  "name": "Aura Frames",
+  "codeowners": ["@christian"],
+  "config_flow": true,
+  "documentation": "https://github.com/christian/homeassistant-aura-frames",
+  "issue_tracker": "https://github.com/christian/homeassistant-aura-frames/issues",
+  "iot_class": "cloud_polling",
+  "version": "0.1.0"
+}
