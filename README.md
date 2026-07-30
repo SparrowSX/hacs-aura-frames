@@ -54,3 +54,7 @@ This integration uses a reverse-engineered API used by the Aura mobile app. It i
 ## License
 
 MIT
+
+<a href="https://buymeacoffee.com/cptthejacko" target="_blank">
+  <img src="https://img.buymeacoffee.com/button-api/?text=Buy me a coffee&emoji=☕&slug=cptthejacko&button_colour=FFDD00&font_colour=000000&font_family=Cookie&outline_colour=000000&coffee_colour=ffffff" />
+</a>
