@@ -1,5 +1,5 @@
 # Aura Frames for Home Assistant
-[![Buy Me A Coffee](https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png)](https://buymeacoffee.com/cptthejacko)
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-FFDD00?logo=buymeacoffee&logoColor=000000)](https://buymeacoffee.com/cptthejacko)
 Home Assistant custom integration to control [Aura](https://auraframes.com) digital picture frames via the unofficial REST API.
 
 ## Features
