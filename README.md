@@ -1,2 +1,56 @@
-# hacs-aura-frames
-HACS Integration für Home Assistant zum Steuern (auch Ein- und Ausschalten) von Aura Bilderrahmen
+# Aura Frames for Home Assistant
+
+Home Assistant custom integration to control [Aura](https://auraframes.com) digital picture frames via the unofficial REST API.
+
+## Features
+
+- Next / previous photo buttons
+- Display on/off via schedule manipulation (no native power API)
+- Online status, current photo, photo count, Wi-Fi network sensors
+- Config flow with email/password login
+- German and English translations, including automatic re-authentication
+
+## Installation
+
+### Manual (development)
+
+1. Copy `custom_components/aura_frames` to your Home Assistant `config/custom_components/` directory.
+2. Restart Home Assistant.
+3. Go to **Settings → Devices & services → Add integration** and search for **Aura Frames**.
+
+### HACS (custom repository)
+
+1. Open HACS → Integrations → Custom repositories.
+2. Add this repository URL and category **Integration**.
+3. Install **Aura Frames** and restart Home Assistant.
+
+## Configuration
+
+During setup, enter your Aura account email and password. If your account has multiple frames, select the one to control.
+
+Credentials are stored in the Home Assistant config entry. A stable device UUID is generated per integration instance for API authentication.
+
+If Aura expires or rejects the saved login, Home Assistant starts its normal re-authentication flow. Enter the current Aura credentials there; the selected frame and its display schedule remain unchanged.
+
+## Display on/off behavior
+
+Aura frames have no direct power API. The integration turns the display off by setting both schedule times to the current time, and restores the previous schedule when turned back on. The original schedule is stored in the config entry. Do not change the frame's display schedule in the Aura app while this switch is off, since turning it back on restores the schedule saved when it was turned off.
+
+## API notice
+
+This integration uses a reverse-engineered API used by the Aura mobile app. It is not officially supported by Aura and may break if Aura changes their API.
+
+## Development
+
+```
+~/Projects/homeassistant-aura-frames/
+├── custom_components/aura_frames/
+├── hacs.json
+└── README.md
+```
+
+Test instance: copy the integration folder to your Home Assistant Green at `http://192.168.188.177:8123`.
+
+## License
+
+MIT

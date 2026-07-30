@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Unofficial digital photo frame icon</title>
+  <desc id="desc">A warm landscape photograph inside a dark blue digital frame.</desc>
+  <rect width="512" height="512" rx="112" fill="#B9DCF2"/>
+  <rect x="72" y="92" width="368" height="328" rx="38" fill="#F9F2E8"/>
+  <rect x="94" y="114" width="324" height="284" rx="22" fill="#E27B5F"/>
+  <path d="M94 292c47-44 89-52 126-24 42 32 79 24 112-9 28-29 57-30 86-14v131H94z" fill="#B94F4F"/>
+  <circle cx="326" cy="190" r="45" fill="#F9D77B"/>
+  <path d="M94 340c44-38 83-42 119-18 35 23 69 23 103-7 31-28 65-28 102-9v92H94z" fill="#8E3846"/>
+  <rect x="128" y="439" width="256" height="14" rx="7" fill="#F9D77B" opacity=".9"/>
+  <circle cx="256" cy="466" r="7" fill="#F9F2E8" opacity=".8"/>
+  <text x="100" y="390" fill="#313437" font-family="Helvetica, Arial, sans-serif" font-size="280" font-weight="400">A</text>
+</svg>
