@@ -1,7 +1,7 @@
 {
   "domain": "aura_frames",
   "name": "Aura Frames",
-  "codeowners": ["@christian"],
+  "codeowners": ["@SparrowSX"],
   "config_flow": true,
   "documentation": "https://github.com/christian/homeassistant-aura-frames",
   "issue_tracker": "https://github.com/christian/homeassistant-aura-frames/issues",
