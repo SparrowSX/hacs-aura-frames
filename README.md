@@ -18,6 +18,8 @@ Home Assistant custom integration to control [Aura](https://auraframes.com) digi
 
 ### Manual (development)
 
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=sparrowsx&repository=hacs-aura-frames&category=Integration)
+
 1. Copy `custom_components/aura_frames` to your Home Assistant `config/custom_components/` directory.
 2. Restart Home Assistant.
 3. Go to **Settings → Devices & services → Add integration** and search for **Aura Frames**.
