@@ -4,7 +4,7 @@ Home Assistant custom integration to control [Aura](https://auraframes.com) digi
 [![Static Badge](https://img.shields.io/badge/HACS-Custom-41BDF5?style=for-the-badge&logo=homeassistantcommunitystore&logoColor=white)](https://github.com/hacs/integration) 
 ![GitHub Issues or Pull Requests](https://img.shields.io/github/issues/sparrowsx/hacs-aura-frames?style=for-the-badge)
 
-![GitHub Release Date](https://img.shields.io/github/release-date/sparrowsx/hacs-aura-frames?style=for-the-badge&label=Latest%20Release) [![GitHub Release](https://img.shields.io/github/v/release/sparrowsx/hacs-aura-frames?style=for-the-badge)](https://github.com/sparrowsx/hacs-aura-frames/releases)
+[![GitHub Release](https://img.shields.io/github/v/release/sparrowsx/hacs-aura-frames?style=for-the-badge)](https://github.com/sparrowsx/hacs-aura-frames/releases)
 
 [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-FFDD00?logo=buymeacoffee&logoColor=000000)](https://buymeacoffee.com/cptthejacko)
 
