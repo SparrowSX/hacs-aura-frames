@@ -1,6 +1,18 @@
 # Aura Frames for Home Assistant
 Home Assistant custom integration to control [Aura](https://auraframes.com) digital picture frames via the unofficial REST API.
 
+[![Static Badge](https://img.shields.io/badge/HACS-Custom-41BDF5?style=for-the-badge&logo=homeassistantcommunitystore&logoColor=white)](https://github.com/hacs/integration) 
+![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/sparrowsx/hacs-aura-frames/total?style=for-the-badge)
+![GitHub Issues or Pull Requests](https://img.shields.io/github/issues/sparrowsx/hacs-aura-frames?style=for-the-badge)
+
+![GitHub Release Date](https://img.shields.io/github/release-date-pre/sparrowsx/hacs-aura-frames?style=for-the-badge&label=Latest%20Beta%20Release) [![GitHub Release](https://img.shields.io/github/v/release/sparrowsx/hacs-aura-frames?include_prereleases&style=for-the-badge)](https://github.com/klein0r/ha-ekeylegacy/releases)
+
+![GitHub Release Date](https://img.shields.io/github/release-date/sparrowsx/hacs-aura-frames?style=for-the-badge&label=Latest%20Release) [![GitHub Release](https://img.shields.io/github/v/release/sparrowsx/hacs-aura-frames?style=for-the-badge)](https://github.com/sparrowsx/hacs-aura-frames/releases)
+
+## Setup
+
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=sparrowsx&repository=hacs-aura-frames&category=Integration)
+
 [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-FFDD00?logo=buymeacoffee&logoColor=000000)](https://buymeacoffee.com/cptthejacko)
 
 ## Features
