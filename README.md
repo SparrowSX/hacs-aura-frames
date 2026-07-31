@@ -1,8 +1,6 @@
 # Aura Frames for Home Assistant
 Home Assistant custom integration to control [Aura](https://auraframes.com) digital picture frames via the unofficial REST API.
-
 [![Static Badge](https://img.shields.io/badge/HACS-Custom-41BDF5?style=for-the-badge&logo=homeassistantcommunitystore&logoColor=white)](https://github.com/hacs/integration) 
-![GitHub Issues or Pull Requests](https://img.shields.io/github/issues/sparrowsx/hacs-aura-frames?style=for-the-badge)
 
 [![GitHub Release](https://img.shields.io/github/v/release/sparrowsx/hacs-aura-frames?style=for-the-badge)](https://github.com/sparrowsx/hacs-aura-frames/releases)
 
