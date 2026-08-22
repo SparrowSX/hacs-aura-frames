@@ -93,7 +93,7 @@ class AuraFramesConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             frame_id = user_input[CONF_FRAME_ID]
             frame = next(
-                (item for item in self._frames if item["id"] == frame_id),
+                (item for item in self._frames if str(item["id"]) == frame_id),
                 None,
             )
             if frame is None:
@@ -103,7 +103,8 @@ class AuraFramesConfigFlow(ConfigFlow, domain=DOMAIN):
                 return await self._create_entry(frame, device_id)
 
         frame_options = {
-            frame["id"]: frame.get("name", frame["id"]) for frame in self._frames
+            str(frame["id"]): frame.get("name", str(frame["id"]))
+            for frame in self._frames
         }
         schema = vol.Schema({vol.Required(CONF_FRAME_ID): vol.In(frame_options)})
 
@@ -117,7 +118,9 @@ class AuraFramesConfigFlow(ConfigFlow, domain=DOMAIN):
         self, frame: dict[str, Any], device_id: str
     ) -> ConfigFlowResult:
         """Create a config entry for the selected frame."""
-        frame_id = frame["id"]
+        # Aura is not consistent about the type of the frame id, so normalize it
+        # here: everything downstream compares it as a string.
+        frame_id = str(frame["id"])
         await self.async_set_unique_id(frame_id)
         self._abort_if_unique_id_configured()
 
@@ -161,7 +164,7 @@ class AuraFramesConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors["base"] = "cannot_connect"
             else:
                 if not any(
-                    str(frame.get("id")) == entry.data[CONF_FRAME_ID]
+                    str(frame.get("id")) == str(entry.data[CONF_FRAME_ID])
                     for frame in frames
                 ):
                     errors["base"] = "frame_not_found"

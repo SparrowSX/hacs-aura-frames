@@ -40,12 +40,14 @@ class AuraFramesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         client: AuraClient,
     ) -> None:
         """Initialize the coordinator."""
-        self.entry = entry
         self.client = client
-        self.frame_id: str = entry.data[CONF_FRAME_ID]
+        # Entries created before the config flow normalized this may hold a
+        # non-string id.
+        self.frame_id: str = str(entry.data[CONF_FRAME_ID])
         super().__init__(
             hass,
             _LOGGER,
+            config_entry=entry,
             name=DOMAIN,
             update_interval=timedelta(seconds=UPDATE_INTERVAL_SECONDS),
             always_update=False,
@@ -54,12 +56,12 @@ class AuraFramesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     @property
     def power_state(self) -> str:
         """Return the current power override state."""
-        return self.entry.data.get(STORAGE_POWER_STATE, POWER_STATE_NORMAL)
+        return self.config_entry.data.get(STORAGE_POWER_STATE, POWER_STATE_NORMAL)
 
     @property
     def saved_schedule(self) -> dict[str, Any] | None:
         """Return saved schedule values when power is overridden."""
-        return self.entry.data.get(STORAGE_SAVED_SCHEDULE)
+        return self.config_entry.data.get(STORAGE_SAVED_SCHEDULE)
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch frame data from the API."""
@@ -88,11 +90,13 @@ class AuraFramesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     ) -> None:
         """Persist power override state on the config entry."""
         new_data = {
-            **self.entry.data,
+            **self.config_entry.data,
             STORAGE_POWER_STATE: power_state,
             STORAGE_SAVED_SCHEDULE: saved_schedule,
         }
-        self.hass.config_entries.async_update_entry(self.entry, data=new_data)
+        self.hass.config_entries.async_update_entry(
+            self.config_entry, data=new_data
+        )
 
     async def async_turn_off(self) -> None:
         """Force the frame off by manipulating the display schedule."""

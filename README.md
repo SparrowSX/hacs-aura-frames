@@ -40,7 +40,7 @@ If Aura expires or rejects the saved login, Home Assistant starts its normal re-
 
 ## Display on/off behavior
 
-Aura frames have no direct power API. The integration turns the display off by setting both schedule times to the current time, and restores the previous schedule when turned back on. The original schedule is stored in the config entry. Do not change the frame's display schedule in the Aura app while this switch is off, since turning it back on restores the schedule saved when it was turned off.
+Aura frames have no direct power API. The integration turns the display off by moving the scheduled off time to the current time, leaving the scheduled on time untouched, and restores the saved schedule when turned back on. The original schedule is stored in the config entry. Do not change the frame's display schedule in the Aura app while this switch is off, since turning it back on restores the schedule saved when it was turned off.
 
 ## API notice
 
