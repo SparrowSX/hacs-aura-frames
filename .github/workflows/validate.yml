@@ -26,6 +26,3 @@ jobs:
       - uses: hacs/action@main
         with:
           category: integration
-          # The aura_frames domain is not in home-assistant/brands (that needs a
-          # separate PR there); drop this line once it is accepted.
-          ignore: brands
