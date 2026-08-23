@@ -152,12 +152,35 @@ class AuraFramesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         frame = await self.client.get_frame(self.frame_id)
         time_zone = frame.get("time_zone") or "Europe/Berlin"
 
-        scheduled_on_at = self._format_schedule_time(
-            saved.get("scheduled_display_on_at")
-        )
-        scheduled_off_at = self._format_schedule_time(
-            saved.get("scheduled_display_off_at")
-        )
+        saved_on_at = saved.get("scheduled_display_on_at")
+        saved_off_at = saved.get("scheduled_display_off_at")
+        scheduled_on_at = self._format_schedule_time(saved_on_at)
+        scheduled_off_at = self._format_schedule_time(saved_off_at)
+
+        # A saved value of None means the frame had no such time, so restoring
+        # None is faithful. A start time that is present but unreadable is a
+        # different matter: sending null would clear the time the display turns
+        # on and could leave the frame dark for good. Refuse before the write,
+        # so _persist_state is never reached and the saved values survive for a
+        # second attempt.
+        if saved_on_at is not None and scheduled_on_at is None:
+            raise AuraApiError(
+                "Refusing to restore the Aura display schedule: the saved "
+                "start time is unreadable, and writing null would clear it "
+                f"(scheduled_display_on_at={saved_on_at!r}). The saved "
+                "schedule is kept so switching on can be retried."
+            )
+
+        # An unreadable off time is not worth refusing over. The frame is off
+        # right now precisely because turn_off moved that value, so bailing out
+        # would strand it in the dark; restoring without one keeps the display
+        # on and only costs the sleep time.
+        if saved_off_at is not None and scheduled_off_at is None:
+            _LOGGER.warning(
+                "Saved Aura display off time %r is unreadable; turning the "
+                "frame back on without a scheduled off time",
+                saved_off_at,
+            )
 
         await self.client.update_frame(
             self.frame_id,
