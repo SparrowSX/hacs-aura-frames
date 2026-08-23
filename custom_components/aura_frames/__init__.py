@@ -14,7 +14,6 @@ from .api import AuraApiError, AuraAuthError, AuraClient
 from .const import (
     CONF_DEVICE_ID,
     CONF_EMAIL,
-    CONF_FRAME_ID,
     CONF_PASSWORD,
     DATA_COORDINATOR,
     DOMAIN,
