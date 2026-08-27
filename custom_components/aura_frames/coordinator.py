@@ -104,6 +104,11 @@ class AuraFramesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.hass.config_entries.async_update_entry(
             self.config_entry, data=new_data
         )
+        # The switch reads power_state from the entry, not from the polled
+        # frame data. With always_update=False a refresh that happens to
+        # return identical data notifies nobody, so the toggle would sit on
+        # its old state until a later poll differed. Push it out here.
+        self.async_update_listeners()
 
     async def async_turn_off(self) -> None:
         """Force the frame off by manipulating the display schedule."""
