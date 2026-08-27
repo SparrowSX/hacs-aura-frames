@@ -38,5 +38,8 @@ jobs:
           # core it tests against, which sets the floor for this version.
           python-version: "3.14"
           cache: pip
+          # Without this the cache step looks for requirements.txt only, and
+          # fails the job before a single test runs.
+          cache-dependency-path: requirements-test.txt
       - run: pip install -r requirements-test.txt
       - run: pytest
