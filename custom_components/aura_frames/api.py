@@ -150,9 +150,18 @@ class AuraClient:
         return frames
 
     async def get_frame(
-        self, frame_id: str, *, include_recent_assets: bool = True
+        self,
+        frame_id: str,
+        *,
+        include_recent_assets: bool = True,
+        ensure_schedule: bool = True,
     ) -> dict[str, Any]:
-        """Return detailed information for a single frame."""
+        """Return detailed information for a single frame.
+
+        Set ``ensure_schedule`` to False when the caller does not read the
+        schedule fields. It skips the second request the workaround below
+        would otherwise make on every call.
+        """
         params = {}
         if include_recent_assets:
             params["include_recent_assets"] = "1"
@@ -166,7 +175,9 @@ class AuraClient:
         frame = self._extract_frame(data)
         # Some Aura API versions omit schedule fields on the single-frame
         # endpoint, but include them in the normal frame list response.
-        if not isinstance(frame.get("scheduled_display_on_at"), str):
+        if ensure_schedule and not isinstance(
+            frame.get("scheduled_display_on_at"), str
+        ):
             frames = await self.get_frames()
             list_frame = next(
                 (item for item in frames if str(item.get("id")) == frame_id),

@@ -66,7 +66,14 @@ class AuraFramesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch frame data from the API."""
         try:
-            return await self.client.get_frame(self.frame_id)
+            # Nothing on the polling path reads the schedule, so skip the
+            # extra frame-list request its absence would otherwise trigger on
+            # every cycle; async_turn_off and async_turn_on ask for it when
+            # they need it. The first fetch still merges, because entities
+            # take their device name and firmware from it once, at creation.
+            return await self.client.get_frame(
+                self.frame_id, ensure_schedule=self.data is None
+            )
         except AuraAuthError as err:
             raise ConfigEntryAuthFailed("Aura credentials have expired") from err
         except AuraApiError as err:
