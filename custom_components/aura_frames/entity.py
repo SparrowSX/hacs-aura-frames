@@ -6,7 +6,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
-from .coordinator import AuraFramesCoordinator
+from .coordinator import AuraFramesCoordinator, frame_model
 
 
 class AuraFrameEntity(CoordinatorEntity[AuraFramesCoordinator]):
@@ -26,6 +26,6 @@ class AuraFrameEntity(CoordinatorEntity[AuraFramesCoordinator]):
             identifiers={(DOMAIN, self._frame_id)},
             name=frame.get("name", "Aura Frame"),
             manufacturer="Aura",
-            model=frame.get("display_aspect_ratio"),
+            model=frame_model(frame),
             sw_version=frame.get("software_version"),
         )

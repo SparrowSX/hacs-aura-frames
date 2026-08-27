@@ -4,21 +4,14 @@ from __future__ import annotations
 
 import logging
 
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import AuraApiError, AuraAuthError, AuraClient
-from .const import (
-    CONF_DEVICE_ID,
-    CONF_EMAIL,
-    CONF_PASSWORD,
-    DATA_COORDINATOR,
-    DOMAIN,
-)
-from .coordinator import AuraFramesCoordinator
+from .const import CONF_DEVICE_ID, CONF_EMAIL, CONF_PASSWORD
+from .coordinator import AuraFramesConfigEntry, AuraFramesCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -30,7 +23,9 @@ PLATFORMS = [
 ]
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_setup_entry(
+    hass: HomeAssistant, entry: AuraFramesConfigEntry
+) -> bool:
     """Set up Aura Frames from a config entry."""
     session = async_get_clientsession(hass)
     client = AuraClient(
@@ -48,18 +43,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = AuraFramesCoordinator(hass, entry, client)
     await coordinator.async_config_entry_first_refresh()
 
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
-        DATA_COORDINATOR: coordinator,
-    }
+    entry.runtime_data = coordinator
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_unload_entry(
+    hass: HomeAssistant, entry: AuraFramesConfigEntry
+) -> bool:
     """Unload a config entry."""
-    if unload_ok := await hass.config_entries.async_unload_platforms(
-        entry, PLATFORMS
-    ):
-        hass.data[DOMAIN].pop(entry.entry_id)
-    return unload_ok
+    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)

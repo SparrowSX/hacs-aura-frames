@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import AuraApiError, AuraAuthError, AuraClient
@@ -29,6 +30,17 @@ _LOGGER = logging.getLogger(__name__)
 
 _SCHEDULE_TIME_RE = re.compile(r"(?:T|^)(\d{2}:\d{2}(?::\d{2})?)")
 
+type AuraFramesConfigEntry = ConfigEntry["AuraFramesCoordinator"]
+
+
+def frame_model(frame: dict[str, Any]) -> str | None:
+    """Return what to show as the device model.
+
+    The aspect ratio is the closest thing to a model the API is known to
+    expose, so it stands in until a response carries a real model field.
+    """
+    return frame.get("model") or frame.get("display_aspect_ratio")
+
 
 class AuraFramesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Coordinator that polls frame state from the Aura API."""
@@ -36,7 +48,7 @@ class AuraFramesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def __init__(
         self,
         hass: HomeAssistant,
-        entry: ConfigEntry,
+        entry: AuraFramesConfigEntry,
         client: AuraClient,
     ) -> None:
         """Initialize the coordinator."""
@@ -71,13 +83,56 @@ class AuraFramesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # every cycle; async_turn_off and async_turn_on ask for it when
             # they need it. The first fetch still merges, because entities
             # take their device name and firmware from it once, at creation.
-            return await self.client.get_frame(
+            frame = await self.client.get_frame(
                 self.frame_id, ensure_schedule=self.data is None
             )
         except AuraAuthError as err:
             raise ConfigEntryAuthFailed("Aura credentials have expired") from err
         except AuraApiError as err:
             raise UpdateFailed(str(err)) from err
+
+        self._async_sync_device(frame)
+        return frame
+
+    def _async_sync_device(self, frame: dict[str, Any]) -> None:
+        """Carry renames and firmware updates into the device registry.
+
+        Entities build their DeviceInfo once, when they are created, so a
+        frame renamed in the Aura app would otherwise keep its old name until
+        the entry is reloaded. Only fields the response actually carries are
+        written: a poll that skips the frame-list merge may not include them
+        at all, and absent must not mean cleared. A name the user set in Home
+        Assistant lives in name_by_user and is not touched by this.
+        """
+        registry = dr.async_get(self.hass)
+        # Looked up through the entry's own devices: async_get_device is
+        # deprecated, and async_get_device_by_identifier only exists from
+        # 2026.8 on. This helper works either side of that line.
+        device = next(
+            (
+                candidate
+                for candidate in dr.async_entries_for_config_entry(
+                    registry, self.config_entry.entry_id
+                )
+                if (DOMAIN, self.frame_id) in candidate.identifiers
+            ),
+            None,
+        )
+        if device is None:
+            return
+
+        changes: dict[str, Any] = {}
+        if (name := frame.get("name")) and name != device.name:
+            changes["name"] = name
+        if (version := frame.get("software_version")) and (
+            version != device.sw_version
+        ):
+            changes["sw_version"] = version
+        if (model := frame_model(frame)) and model != device.model:
+            changes["model"] = model
+
+        if changes:
+            registry.async_update_device(device.id, **changes)
 
     async def async_next_photo(self) -> None:
         """Advance to the next photo."""

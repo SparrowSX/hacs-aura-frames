@@ -3,24 +3,21 @@
 from __future__ import annotations
 
 from homeassistant.components.switch import SwitchEntity
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DATA_COORDINATOR, DOMAIN, POWER_STATE_FORCED_OFF
-from .coordinator import AuraFramesCoordinator
+from .const import POWER_STATE_FORCED_OFF
+from .coordinator import AuraFramesConfigEntry
 from .entity import AuraFrameEntity
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: AuraFramesConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Aura frame switches."""
-    coordinator: AuraFramesCoordinator = hass.data[DOMAIN][entry.entry_id][
-        DATA_COORDINATOR
-    ]
+    coordinator = entry.runtime_data
     async_add_entities([AuraFramePowerSwitch(coordinator)])
 
 

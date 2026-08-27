@@ -12,8 +12,6 @@ CONF_PASSWORD = "password"
 CONF_FRAME_ID = "frame_id"
 CONF_DEVICE_ID = "device_id"
 
-DATA_COORDINATOR = "coordinator"
-
 ATTR_FRAME_ID = "frame_id"
 ATTR_ASSET_ID = "asset_id"
 ATTR_LANDSCAPE_URL = "landscape_url"
