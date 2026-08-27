@@ -51,10 +51,28 @@ This integration uses a reverse-engineered API used by the Aura mobile app. It i
 ```
 ~/Projects/homeassistant-aura-frames/
 ├── custom_components/aura_frames/
+├── tests/
 ├── hacs.json
 ├── logo.svg
+├── pytest.ini
+├── requirements-test.txt
 └── README.md
 ```
+
+### Tests
+
+The tests run against a real Home Assistant core, supplied by
+[`pytest-homeassistant-custom-component`][phcc]. It pins the core version it
+tests against, so `requirements-test.txt` is the single place to bump when
+testing against a newer release. Python 3.14 or later is required.
+
+```
+python3 -m venv .venv
+.venv/bin/pip install -r requirements-test.txt
+.venv/bin/python -m pytest
+```
+
+[phcc]: https://github.com/MatthewFlamm/pytest-homeassistant-custom-component
 
 
 ## License

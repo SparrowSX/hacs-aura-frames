@@ -26,3 +26,17 @@ jobs:
       - uses: hacs/action@main
         with:
           category: integration
+
+  tests:
+    name: pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          # pytest-homeassistant-custom-component pulls in the Home Assistant
+          # core it tests against, which sets the floor for this version.
+          python-version: "3.14"
+          cache: pip
+      - run: pip install -r requirements-test.txt
+      - run: pytest
