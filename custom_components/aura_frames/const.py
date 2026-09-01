@@ -26,7 +26,16 @@ POWER_STATE_FORCED_OFF = "forced_off"
 STORAGE_SAVED_SCHEDULE = "saved_schedule"
 STORAGE_POWER_STATE = "power_state"
 
-UPDATE_INTERVAL_SECONDS = 60
+# Aura's API is the mobile app's, and the app only talks to it while
+# someone has it open. A frame that is polled around the clock sees far more
+# traffic on its account than Aura ever designed for, so poll at a rate that
+# still feels live for a photo frame and no faster.
+UPDATE_INTERVAL_SECONDS = 300
+
+# How stale the frame's own heartbeat may be before it counts as offline.
+# Polling every five minutes means the heartbeat read here is up to that old
+# already, so the window has to be a multiple of the interval.
+ONLINE_GRACE_SECONDS = UPDATE_INTERVAL_SECONDS * 3
 
 # How long the client waits before opening another session after the one it
 # just opened was rejected.

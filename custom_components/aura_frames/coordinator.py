@@ -18,6 +18,7 @@ from .api import AuraApiError, AuraAuthError, AuraClient
 from .const import (
     CONF_FRAME_ID,
     DOMAIN,
+    ONLINE_GRACE_SECONDS,
     POWER_STATE_FORCED_OFF,
     POWER_STATE_NORMAL,
     SCHEDULE_EPOCH_DATE,
@@ -279,7 +280,7 @@ class AuraFramesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return False
 
         age = datetime.now(timezone.utc) - online_at
-        return age.total_seconds() < UPDATE_INTERVAL_SECONDS * 3
+        return age.total_seconds() < ONLINE_GRACE_SECONDS
 
     def current_asset(self) -> dict[str, Any] | None:
         """Return the currently displayed asset, if known."""
