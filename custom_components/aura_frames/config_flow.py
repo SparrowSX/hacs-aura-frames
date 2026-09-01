@@ -44,6 +44,7 @@ class AuraFramesConfigFlow(ConfigFlow, domain=DOMAIN):
         self._email: str | None = None
         self._password: str | None = None
         self._device_id: str | None = None
+        self._credentials: dict[str, str | None] = {}
         self._frames: list[dict[str, Any]] = []
 
     async def async_step_user(
@@ -70,6 +71,10 @@ class AuraFramesConfigFlow(ConfigFlow, domain=DOMAIN):
             except aiohttp.ClientError:
                 errors["base"] = "cannot_connect"
             else:
+                # Carried into the entry so that setting up, and every
+                # restart after it, resumes this session instead of opening
+                # another one.
+                self._credentials = client.credentials
                 if not self._frames:
                     errors["base"] = "no_frames"
                 elif len(self._frames) == 1:
@@ -131,6 +136,7 @@ class AuraFramesConfigFlow(ConfigFlow, domain=DOMAIN):
                 CONF_PASSWORD: self._password,
                 CONF_FRAME_ID: frame_id,
                 CONF_DEVICE_ID: device_id,
+                **self._credentials,
                 STORAGE_POWER_STATE: POWER_STATE_NORMAL,
                 STORAGE_SAVED_SCHEDULE: None,
             },
@@ -175,6 +181,7 @@ class AuraFramesConfigFlow(ConfigFlow, domain=DOMAIN):
                             **entry.data,
                             CONF_EMAIL: email,
                             CONF_PASSWORD: password,
+                            **client.credentials,
                         },
                     )
                     await self.hass.config_entries.async_reload(entry.entry_id)

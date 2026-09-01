@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pytest_homeassistant_custom_component.common import (
@@ -11,8 +11,10 @@ from pytest_homeassistant_custom_component.common import (
     async_fire_time_changed,
 )
 
-from custom_components.aura_frames.api import AuraApiError
+from custom_components.aura_frames.api import AuraApiError, AuraAuthError
 from custom_components.aura_frames.const import (
+    CONF_AUTH_TOKEN,
+    CONF_USER_ID,
     DOMAIN,
     POWER_STATE_FORCED_OFF,
     STORAGE_POWER_STATE,
@@ -305,3 +307,54 @@ async def test_the_entry_unloads_and_loads_again(
 
     assert init_integration.state is ConfigEntryState.LOADED
     assert hass.states.get(entity_id).state == "on"
+
+
+async def test_setup_stores_the_session_and_the_next_one_resumes_it(
+    hass: HomeAssistant,
+    config_entry: MockConfigEntry,
+    mock_client_class: MagicMock,
+    mock_client: AsyncMock,
+) -> None:
+    """Logging in happens once, not on every setup.
+
+    Every login opens a new session on the Aura account, and the frame reacts
+    to that churn by dropping its own session, restarting and showing its
+    pairing code. So the session the first setup opens is kept on the entry,
+    and every setup after it resumes that one.
+    """
+    config_entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert mock_client.login.call_count == 1
+    assert config_entry.data[CONF_USER_ID] == "1"
+    assert config_entry.data[CONF_AUTH_TOKEN] == "token"
+
+    await hass.config_entries.async_reload(config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert mock_client.login.call_count == 1
+    resumed = mock_client_class.call_args.kwargs
+    assert resumed["user_id"] == "1"
+    assert resumed["auth_token"] == "token"
+
+
+async def test_a_session_the_api_rejects_reaches_reauth(
+    hass: HomeAssistant,
+    config_entry: MockConfigEntry,
+    mock_client: AsyncMock,
+) -> None:
+    """The client renews a stale session itself; what is left is a real one.
+
+    An AuraAuthError out of the client means the renewal failed too, so the
+    credentials are the problem and only the user can fix them.
+    """
+    mock_client.get_frame.side_effect = AuraAuthError("abgelaufen")
+
+    config_entry.add_to_hass(hass)
+    assert not await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert config_entry.state is ConfigEntryState.SETUP_ERROR
+    flows = hass.config_entries.flow.async_progress_by_handler(DOMAIN)
+    assert [flow["context"]["source"] for flow in flows] == ["reauth"]

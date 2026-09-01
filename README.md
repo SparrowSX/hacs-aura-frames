@@ -36,7 +36,9 @@ During setup, enter your Aura account email and password. If your account has mu
 
 Credentials are stored in the Home Assistant config entry. A stable device UUID is generated per integration instance for API authentication.
 
-If Aura expires or rejects the saved login, Home Assistant starts its normal re-authentication flow. Enter the current Aura credentials there; the selected frame and its display schedule remain unchanged.
+The session Aura hands out at login is stored alongside them and reused across restarts, so the integration logs in once rather than on every setup. Every login opens a new session on the Aura account, and a frame reacts to that churn by dropping its own session: it restarts and briefly shows its pairing code before coming back.
+
+If Aura rejects the stored session, the integration opens a new one once and carries on. When that one is rejected too, Home Assistant starts its normal re-authentication flow instead of logging in over and over. Enter the current Aura credentials there; the selected frame and its display schedule remain unchanged.
 
 ## Display on/off behavior
 

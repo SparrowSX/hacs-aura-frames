@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import datetime, timezone
+from time import monotonic
 from typing import Any
 
 import aiohttp
@@ -11,7 +13,10 @@ import aiohttp
 from .const import (
     API_BASE_URL,
     APP_IDENTIFIER,
+    CONF_AUTH_TOKEN,
+    CONF_USER_ID,
     DEFAULT_LOCALE,
+    LOGIN_COOLDOWN_SECONDS,
     USER_AGENT,
 )
 
@@ -36,19 +41,44 @@ class AuraClient:
         *,
         user_id: str | None = None,
         auth_token: str | None = None,
+        email: str | None = None,
+        password: str | None = None,
+        on_credentials_refreshed: (
+            Callable[[dict[str, str | None]], None] | None
+        ) = None,
     ) -> None:
-        """Initialize the client."""
+        """Initialize the client.
+
+        Pass ``user_id`` and ``auth_token`` to resume a session the caller
+        stored earlier. With ``email`` and ``password`` the client can open a
+        new one by itself when the API rejects that session, and reports it
+        through ``on_credentials_refreshed`` so the caller can store it too.
+        """
         self._session = session
         self.device_id = device_id
         self.user_id = user_id
         self.auth_token = auth_token
+        self._email = email
+        self._password = password
+        self._on_credentials_refreshed = on_credentials_refreshed
+        self._last_login: float | None = None
 
     @property
     def is_authenticated(self) -> bool:
-        """Return True if the client has valid credentials."""
+        """Return True if the client holds a session."""
         return bool(self.user_id and self.auth_token)
 
-    def _base_headers(self) -> dict[str, str]:
+    @property
+    def credentials(self) -> dict[str, str | None]:
+        """Return the session in the shape the config entry stores it."""
+        return {CONF_USER_ID: self.user_id, CONF_AUTH_TOKEN: self.auth_token}
+
+    @property
+    def _can_log_in(self) -> bool:
+        """Return True if the client knows enough to open a session."""
+        return bool(self._email and self._password)
+
+    def _base_headers(self, *, authenticated: bool = True) -> dict[str, str]:
         """Return headers common to all requests."""
         headers = {
             "Accept": "*/*",
@@ -57,7 +87,7 @@ class AuraClient:
             "User-Agent": USER_AGENT,
             "X-Client-Device-Id": self.device_id,
         }
-        if self.is_authenticated:
+        if authenticated and self.is_authenticated:
             headers["X-User-Id"] = self.user_id  # type: ignore[assignment]
             headers["X-Token-Auth"] = self.auth_token  # type: ignore[assignment]
         return headers
@@ -69,18 +99,62 @@ class AuraClient:
         *,
         json: dict[str, Any] | None = None,
         params: dict[str, str] | None = None,
+    ) -> Any:
+        """Perform an authenticated request, renewing the session if needed.
+
+        Every login opens a new session on the Aura account, so the client
+        keeps the one it was given and logs in again only when the API turns
+        it down.
+        """
+        if not self.is_authenticated:
+            if not self._can_log_in:
+                raise AuraAuthError("Not authenticated")
+            await self._async_log_in_again()
+
+        try:
+            return await self._send(method, path, json=json, params=params)
+        except AuraAuthError:
+            if not self._can_log_in:
+                raise
+            await self._async_log_in_again()
+            return await self._send(method, path, json=json, params=params)
+
+    async def _async_log_in_again(self) -> None:
+        """Open a fresh session, but never one right after another.
+
+        A session that is rejected shortly after it was opened is not
+        something logging in again would fix, and each attempt opens another
+        session on the account -- the churn that sends the frame back to its
+        pairing screen. Giving up instead surfaces in Home Assistant as a
+        reauth, which leaves the account alone until someone looks at it.
+        """
+        if (
+            self._last_login is not None
+            and monotonic() - self._last_login < LOGIN_COOLDOWN_SECONDS
+        ):
+            raise AuraAuthError(
+                "Aura rejected a session that was opened less than "
+                f"{LOGIN_COOLDOWN_SECONDS} seconds ago; not opening another one"
+            )
+        _LOGGER.debug("Aura session missing or rejected, logging in again")
+        await self.login(self._email, self._password)  # type: ignore[arg-type]
+
+    async def _send(
+        self,
+        method: str,
+        path: str,
+        *,
+        json: dict[str, Any] | None = None,
+        params: dict[str, str] | None = None,
         authenticated: bool = True,
     ) -> Any:
-        """Perform an HTTP request against the Aura API."""
-        if authenticated and not self.is_authenticated:
-            raise AuraAuthError("Not authenticated")
-
+        """Perform one HTTP request against the Aura API."""
         url = f"{API_BASE_URL}{path}"
         try:
             async with self._session.request(
                 method,
                 url,
-                headers=self._base_headers(),
+                headers=self._base_headers(authenticated=authenticated),
                 json=json,
                 params=params,
                 timeout=aiohttp.ClientTimeout(total=30),
@@ -107,6 +181,8 @@ class AuraClient:
 
     async def login(self, email: str, password: str) -> dict[str, Any]:
         """Authenticate and store session credentials."""
+        self._email = email
+        self._password = password
         payload = {
             "identifier_for_vendor": self.device_id,
             "client_device_id": self.device_id,
@@ -114,7 +190,7 @@ class AuraClient:
             "locale": DEFAULT_LOCALE,
             "user": {"email": email, "password": password},
         }
-        data = await self._request(
+        data = await self._send(
             "POST", "/login.json", json=payload, authenticated=False
         )
 
@@ -129,6 +205,10 @@ class AuraClient:
             self.auth_token = str(user["auth_token"])
         except (KeyError, TypeError) as err:
             raise AuraAuthError("Login response did not contain credentials") from err
+
+        self._last_login = monotonic()
+        if self._on_credentials_refreshed is not None:
+            self._on_credentials_refreshed(self.credentials)
         return user
 
     async def get_frames(self) -> list[dict[str, Any]]:

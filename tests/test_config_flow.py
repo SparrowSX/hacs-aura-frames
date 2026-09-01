@@ -11,10 +11,12 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.aura_frames.api import AuraApiError, AuraAuthError
 from custom_components.aura_frames.const import (
+    CONF_AUTH_TOKEN,
     CONF_DEVICE_ID,
     CONF_EMAIL,
     CONF_FRAME_ID,
     CONF_PASSWORD,
+    CONF_USER_ID,
     DOMAIN,
     POWER_STATE_NORMAL,
     STORAGE_POWER_STATE,
@@ -40,6 +42,7 @@ def flow_client_class() -> Generator[MagicMock]:
     ) as client_class:
         client = client_class.return_value
         client.login.return_value = {"id": "1", "auth_token": "token"}
+        client.credentials = {CONF_USER_ID: "1", CONF_AUTH_TOKEN: "token"}
         client.get_frames.return_value = [FRAME]
         yield client_class
 
@@ -88,6 +91,9 @@ async def test_a_single_frame_is_added_without_asking(
     assert data[CONF_DEVICE_ID]
     assert data[STORAGE_POWER_STATE] == POWER_STATE_NORMAL
     assert data[STORAGE_SAVED_SCHEDULE] is None
+    # The session the flow opened, so that setup does not open a second one.
+    assert data[CONF_USER_ID] == "1"
+    assert data[CONF_AUTH_TOKEN] == "token"
 
 
 async def test_several_frames_bring_up_the_picker(
@@ -256,6 +262,9 @@ async def test_reauth_stores_the_new_password_and_reloads(
     assert entry.data[CONF_PASSWORD] == NEW_CREDENTIALS[CONF_PASSWORD]
     assert entry.data[CONF_FRAME_ID] == FRAME_ID
     assert entry.data[CONF_DEVICE_ID] == ENTRY_DATA[CONF_DEVICE_ID]
+    # Reauth logged in, so the entry carries that session from here on.
+    assert entry.data[CONF_USER_ID] == "1"
+    assert entry.data[CONF_AUTH_TOKEN] == "token"
 
 
 async def test_reauth_keeps_the_old_password_when_the_new_one_fails(

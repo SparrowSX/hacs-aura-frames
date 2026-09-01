@@ -11,6 +11,10 @@ CONF_EMAIL = "email"
 CONF_PASSWORD = "password"
 CONF_FRAME_ID = "frame_id"
 CONF_DEVICE_ID = "device_id"
+# The session the API hands out at login. Stored so that a restart reuses
+# it instead of opening a new one.
+CONF_USER_ID = "user_id"
+CONF_AUTH_TOKEN = "auth_token"
 
 ATTR_FRAME_ID = "frame_id"
 ATTR_ASSET_ID = "asset_id"
@@ -23,5 +27,9 @@ STORAGE_SAVED_SCHEDULE = "saved_schedule"
 STORAGE_POWER_STATE = "power_state"
 
 UPDATE_INTERVAL_SECONDS = 60
+
+# How long the client waits before opening another session after the one it
+# just opened was rejected.
+LOGIN_COOLDOWN_SECONDS = 300
 
 SCHEDULE_EPOCH_DATE = "1969-12-31"
