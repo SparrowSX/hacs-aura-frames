@@ -42,7 +42,14 @@ If Aura rejects the stored session, the integration opens a new one once and car
 
 ## Display on/off behavior
 
-Aura frames have no direct power API. The integration turns the display off by moving the scheduled off time to the current time, leaving the scheduled on time untouched, and restores the saved schedule when turned back on. The original schedule is stored in the config entry. Do not change the frame's display schedule in the Aura app while this switch is off, since turning it back on restores the schedule saved when it was turned off.
+Aura frames have no direct power API, so the integration works through the display schedule the Aura app also writes.
+
+- **Off** moves the scheduled off time to the current time and leaves the scheduled on time alone, so the display goes dark right away.
+- **On** switches the frame's scheduled sleep off, which is what the schedule toggle in the Aura app does. Writing the old schedule back is not enough: the frame only shows photos between its on and off time, so a restore after the off time has passed -- an evening switch-on -- would leave the frame dark while Home Assistant reported the switch as on.
+
+The times the frame had before the switch first took it over are remembered in the config entry and written back on every switch-on, which repairs the off time that switching off moved. They are never cleared, and a time the API reports in a shape the integration cannot read is left out of the update rather than sent as null, so the frame keeps whatever it has.
+
+To hand the frame back to its own schedule, switch its sleep schedule on again in the Aura app. Do not change the schedule there while the switch is off, since the remembered times are written back on the way on.
 
 ## API notice
 

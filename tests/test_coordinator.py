@@ -11,12 +11,14 @@ from pytest_homeassistant_custom_component.common import (
     async_fire_time_changed,
 )
 
-from custom_components.aura_frames.api import AuraApiError, AuraAuthError
+from custom_components.aura_frames.api import AuraAuthError
 from custom_components.aura_frames.const import (
     CONF_AUTH_TOKEN,
     CONF_USER_ID,
     DOMAIN,
     POWER_STATE_FORCED_OFF,
+    POWER_STATE_FORCED_ON,
+    POWER_STATE_NORMAL,
     STORAGE_POWER_STATE,
     STORAGE_SAVED_SCHEDULE,
     UPDATE_INTERVAL_SECONDS,
@@ -26,7 +28,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.util import dt as dt_util
 
-from .const import FRAME_ID
+from .const import FRAME_ID, SAVED_SCHEDULE
 
 
 def frame_device(hass: HomeAssistant, entry: MockConfigEntry):
@@ -62,78 +64,155 @@ def force_off(
     )
 
 
-async def test_turn_off_saves_the_schedule_and_turn_on_restores_it(
+async def test_turn_off_moves_the_off_time_and_remembers_the_schedule(
     hass: HomeAssistant,
     init_integration: MockConfigEntry,
     mock_client: AsyncMock,
 ) -> None:
-    """The round trip stores the frame's times and writes them back."""
-    entity_id = switch_entity_id(hass)
-
+    """Off is still the off time moved to now, with the start time kept."""
     await hass.services.async_call(
-        "switch", "turn_off", {"entity_id": entity_id}, blocking=True
+        "switch",
+        "turn_off",
+        {"entity_id": switch_entity_id(hass)},
+        blocking=True,
     )
+
+    written = mock_client.update_frame.call_args.args[1]
+    assert written["scheduled_display_sleep"] is True
+    assert written["scheduled_display_on_at"] == "1969-12-31T07:30:00.000Z"
+    assert written["scheduled_display_off_at"] != "1969-12-31T22:00:00.000Z"
 
     saved = init_integration.data[STORAGE_SAVED_SCHEDULE]
     assert saved["scheduled_display_on_at"] == "1969-12-31T07:30:00.000Z"
     assert saved["scheduled_display_off_at"] == "1969-12-31T22:00:00.000Z"
     assert init_integration.data[STORAGE_POWER_STATE] == POWER_STATE_FORCED_OFF
 
+
+async def test_turn_on_switches_the_scheduled_sleep_off(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+    mock_client: AsyncMock,
+) -> None:
+    """Restoring the window cannot light a frame outside that window.
+
+    The frame shows photos between its on and off time, so writing the old
+    schedule back after the off time has passed leaves it dark. Only
+    switching the scheduled sleep off turns the display on whatever the
+    time is.
+    """
+    entity_id = switch_entity_id(hass)
+    force_off(hass, init_integration, SAVED_SCHEDULE)
+    mock_client.update_frame.reset_mock()
+
     await hass.services.async_call(
         "switch", "turn_on", {"entity_id": entity_id}, blocking=True
     )
 
     written = mock_client.update_frame.call_args.args[1]
+    assert written["scheduled_display_sleep"] is False
     assert written["scheduled_display_on_at"] == "1969-12-31T07:30:00.000Z"
     assert written["scheduled_display_off_at"] == "1969-12-31T22:00:00.000Z"
-    assert init_integration.data[STORAGE_SAVED_SCHEDULE] is None
+    assert init_integration.data[STORAGE_POWER_STATE] == POWER_STATE_FORCED_ON
+    assert hass.states.get(entity_id).state == "on"
 
 
-async def test_turn_on_refuses_an_unreadable_start_time(
+async def test_turn_on_forces_a_frame_the_switch_never_touched(
     hass: HomeAssistant,
     init_integration: MockConfigEntry,
     mock_client: AsyncMock,
 ) -> None:
-    """An unreadable start time must not be written back as null.
+    """A dark frame has to come on even while the switch already reads on.
 
-    Sending null would clear the time the display comes on, and clearing the
-    saved schedule afterwards would leave nothing to retry with.
+    Nothing in Home Assistant knows whether the frame's own schedule has it
+    lit right now, and switch.turn_on reaches the entity whatever state it
+    is in. Treating that as a no-op is what left the frame dark.
     """
-    saved = {
-        "scheduled_display_sleep": True,
-        "scheduled_display_on_at": "so kaputt",
-        "scheduled_display_off_at": "1969-12-31T22:00:00.000Z",
-    }
-    force_off(hass, init_integration, saved)
+    assert init_integration.data[STORAGE_POWER_STATE] == POWER_STATE_NORMAL
     mock_client.update_frame.reset_mock()
 
-    with pytest.raises(AuraApiError, match="start time is unreadable"):
-        await hass.services.async_call(
-            "switch",
-            "turn_on",
-            {"entity_id": switch_entity_id(hass)},
-            blocking=True,
-        )
+    await hass.services.async_call(
+        "switch",
+        "turn_on",
+        {"entity_id": switch_entity_id(hass)},
+        blocking=True,
+    )
+
+    written = mock_client.update_frame.call_args.args[1]
+    assert written["scheduled_display_sleep"] is False
+    assert init_integration.data[STORAGE_POWER_STATE] == POWER_STATE_FORCED_ON
+    assert init_integration.data[STORAGE_SAVED_SCHEDULE] == SAVED_SCHEDULE
+
+
+async def test_a_second_turn_on_writes_nothing(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+    mock_client: AsyncMock,
+) -> None:
+    """Once the display is forced on there is nothing left to send."""
+    entity_id = switch_entity_id(hass)
+    await hass.services.async_call(
+        "switch", "turn_on", {"entity_id": entity_id}, blocking=True
+    )
+    mock_client.update_frame.reset_mock()
+
+    await hass.services.async_call(
+        "switch", "turn_on", {"entity_id": entity_id}, blocking=True
+    )
 
     mock_client.update_frame.assert_not_called()
-    assert init_integration.data[STORAGE_POWER_STATE] == POWER_STATE_FORCED_OFF
-    assert init_integration.data[STORAGE_SAVED_SCHEDULE] == saved
 
 
-async def test_turn_on_still_restores_when_the_off_time_is_unreadable(
+async def test_the_off_time_the_switch_moved_is_repaired(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+    mock_client: AsyncMock,
+    frame: dict,
+) -> None:
+    """The remembered schedule outlives the cycle it was captured in.
+
+    Turning off overwrites the frame's off time, so the record read on the
+    way back carries that forced value. Writing the record back as found is
+    what walked the off time forward until the frame stopped coming on.
+    """
+    entity_id = switch_entity_id(hass)
+    await hass.services.async_call(
+        "switch", "turn_off", {"entity_id": entity_id}, blocking=True
+    )
+
+    # What the frame looks like once Aura has applied that write.
+    frame["scheduled_display_off_at"] = "1969-12-31T18:54:00.000Z"
+
+    await hass.services.async_call(
+        "switch", "turn_on", {"entity_id": entity_id}, blocking=True
+    )
+
+    written = mock_client.update_frame.call_args.args[1]
+    assert written["scheduled_display_off_at"] == "1969-12-31T22:00:00.000Z"
+    assert (
+        init_integration.data[STORAGE_SAVED_SCHEDULE]["scheduled_display_off_at"]
+        == "1969-12-31T22:00:00.000Z"
+    )
+
+
+async def test_an_unreadable_remembered_time_is_left_out(
     hass: HomeAssistant,
     init_integration: MockConfigEntry,
     mock_client: AsyncMock,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Refusing here would strand the frame in the dark, so it only warns."""
+    """Sending null would clear the user's schedule; omitting keeps it.
+
+    The update is a partial one, so a field left out of the payload keeps
+    whatever the frame has. That is strictly better than refusing to switch
+    the frame on, which used to strand it in the dark.
+    """
     force_off(
         hass,
         init_integration,
         {
             "scheduled_display_sleep": True,
-            "scheduled_display_on_at": "1969-12-31T07:30:00.000Z",
-            "scheduled_display_off_at": "auch kaputt",
+            "scheduled_display_on_at": "so kaputt",
+            "scheduled_display_off_at": "1969-12-31T22:00:00.000Z",
         },
     )
     mock_client.update_frame.reset_mock()
@@ -146,18 +225,19 @@ async def test_turn_on_still_restores_when_the_off_time_is_unreadable(
     )
 
     written = mock_client.update_frame.call_args.args[1]
-    assert written["scheduled_display_on_at"] == "1969-12-31T07:30:00.000Z"
-    assert written["scheduled_display_off_at"] is None
-    assert init_integration.data[STORAGE_SAVED_SCHEDULE] is None
+    assert "scheduled_display_on_at" not in written
+    assert written["scheduled_display_off_at"] == "1969-12-31T22:00:00.000Z"
+    assert written["scheduled_display_sleep"] is False
     assert "unreadable" in caplog.text
+    assert init_integration.data[STORAGE_POWER_STATE] == POWER_STATE_FORCED_ON
 
 
-async def test_a_missing_saved_off_time_is_restored_as_missing(
+async def test_a_missing_remembered_off_time_is_left_out(
     hass: HomeAssistant,
     init_integration: MockConfigEntry,
     mock_client: AsyncMock,
 ) -> None:
-    """None means the frame had no off time; writing None back is faithful."""
+    """None means the frame had no off time, so there is none to write."""
     force_off(
         hass,
         init_integration,
@@ -177,8 +257,8 @@ async def test_a_missing_saved_off_time_is_restored_as_missing(
     )
 
     written = mock_client.update_frame.call_args.args[1]
-    assert written["scheduled_display_off_at"] is None
-    assert init_integration.data[STORAGE_SAVED_SCHEDULE] is None
+    assert "scheduled_display_off_at" not in written
+    assert written["scheduled_display_on_at"] == "1969-12-31T07:30:00.000Z"
 
 
 async def test_polling_stops_asking_for_the_schedule(

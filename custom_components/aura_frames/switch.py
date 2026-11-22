@@ -29,11 +29,17 @@ class AuraFramePowerSwitch(AuraFrameEntity, SwitchEntity):
 
     @property
     def is_on(self) -> bool:
-        """Return True when the frame display is not forced off."""
+        """Return True when the frame display is not forced off.
+
+        A frame the switch has never touched counts as on: whether its own
+        schedule has it lit at this moment is not something Home Assistant
+        can see. Turning the switch on is therefore not a no-op in that
+        state -- it forces the display on.
+        """
         return self.coordinator.power_state != POWER_STATE_FORCED_OFF
 
     async def async_turn_on(self, **kwargs) -> None:
-        """Restore the saved display schedule."""
+        """Force the display on."""
         await self.coordinator.async_turn_on()
 
     async def async_turn_off(self, **kwargs) -> None:

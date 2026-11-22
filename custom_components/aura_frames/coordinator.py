@@ -20,6 +20,7 @@ from .const import (
     DOMAIN,
     ONLINE_GRACE_SECONDS,
     POWER_STATE_FORCED_OFF,
+    POWER_STATE_FORCED_ON,
     POWER_STATE_NORMAL,
     SCHEDULE_EPOCH_DATE,
     STORAGE_POWER_STATE,
@@ -166,41 +167,81 @@ class AuraFramesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # its old state until a later poll differed. Push it out here.
         self.async_update_listeners()
 
+    def _schedule_of(self, frame: dict[str, Any]) -> dict[str, Any]:
+        """Return the schedule fields of a frame record.
+
+        This is what gets remembered the first time the switch takes the
+        frame over, so that both directions have the user's own times to
+        write back afterwards.
+        """
+        return {
+            "scheduled_display_sleep": frame.get("scheduled_display_sleep", True),
+            "scheduled_display_on_at": frame.get("scheduled_display_on_at"),
+            "scheduled_display_off_at": frame.get("scheduled_display_off_at"),
+        }
+
+    def _remembered_time(self, saved: dict[str, Any], field: str) -> str | None:
+        """Return a remembered schedule time ready to be written back.
+
+        None means there is nothing to write: either the frame had no such
+        time, or the value cannot be read. Both are left out of the payload
+        rather than sent as null, which would clear the user's own time.
+        """
+        value = saved.get(field)
+        formatted = self._format_schedule_time(value)
+        if formatted is None and value is not None:
+            _LOGGER.warning(
+                "Aura schedule value %s=%r is unreadable; leaving the time "
+                "the frame has in place instead of clearing it",
+                field,
+                value,
+            )
+        return formatted
+
+    @staticmethod
+    def _schedule_write(
+        *,
+        sleep: bool,
+        time_zone: str,
+        on_at: str | None,
+        off_at: str | None,
+    ) -> dict[str, Any]:
+        """Return an update payload that carries only readable times.
+
+        The PUT is a partial update, so a field left out keeps whatever the
+        frame has. Only a field that is sent as null is cleared, and clearing
+        a display schedule is never what the switch is for.
+        """
+        payload: dict[str, Any] = {
+            "scheduled_display_sleep": sleep,
+            "user_set_time_zone": time_zone,
+        }
+        if on_at is not None:
+            payload["scheduled_display_on_at"] = on_at
+        if off_at is not None:
+            payload["scheduled_display_off_at"] = off_at
+        return payload
+
     async def async_turn_off(self) -> None:
-        """Force the frame off by manipulating the display schedule."""
+        """Force the frame off by moving the scheduled off time to now."""
         if self.power_state == POWER_STATE_FORCED_OFF:
             return
 
         frame = await self.client.get_frame(self.frame_id)
         time_zone = frame.get("time_zone") or "Europe/Berlin"
         now = datetime.now(ZoneInfo(time_zone))
-        time_str = now.strftime("%H:%M:%S")
-
-        saved_schedule = {
-            "scheduled_display_sleep": frame.get("scheduled_display_sleep", True),
-            "scheduled_display_on_at": frame.get("scheduled_display_on_at"),
-            "scheduled_display_off_at": frame.get("scheduled_display_off_at"),
-        }
-        scheduled_on_at = self._format_schedule_time(
-            frame.get("scheduled_display_on_at")
-        )
-        if scheduled_on_at is None:
-            raise AuraApiError(
-                "Aura did not return a valid scheduled display start time; "
-                "refusing to overwrite it (available fields: "
-                f"{', '.join(sorted(frame.keys()))}; "
-                "scheduled_display_on_at="
-                f"{frame.get('scheduled_display_on_at')!r})"
-            )
+        saved_schedule = self.saved_schedule or self._schedule_of(frame)
 
         await self.client.update_frame(
             self.frame_id,
-            {
-                "scheduled_display_sleep": True,
-                "scheduled_display_on_at": scheduled_on_at,
-                "scheduled_display_off_at": f"{SCHEDULE_EPOCH_DATE}T{time_str}.000Z",
-                "user_set_time_zone": time_zone,
-            },
+            self._schedule_write(
+                sleep=True,
+                time_zone=time_zone,
+                on_at=self._remembered_time(
+                    saved_schedule, "scheduled_display_on_at"
+                ),
+                off_at=f"{SCHEDULE_EPOCH_DATE}T{now:%H:%M:%S}.000Z",
+            ),
         )
         await self._persist_state(
             power_state=POWER_STATE_FORCED_OFF,
@@ -209,61 +250,41 @@ class AuraFramesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self.async_request_refresh()
 
     async def async_turn_on(self) -> None:
-        """Restore the original display schedule."""
-        if self.power_state != POWER_STATE_FORCED_OFF:
-            return
+        """Force the display on and park the frame's own sleep schedule.
 
-        saved = self.saved_schedule
-        if not saved:
-            raise RuntimeError("No saved schedule to restore")
+        Writing the remembered schedule back is not enough to light the
+        display: the frame only shows photos inside that window, so a
+        restore once the scheduled off time has passed -- an evening
+        switch-on, which is the usual case -- leaves the frame dark while
+        Home Assistant reports the switch as on. Switching the scheduled
+        sleep off is what the schedule toggle in the Aura app does, and it
+        takes effect whatever the time is. The remembered times are written
+        alongside it, so the off time this integration moved is repaired and
+        the user's own schedule is there to be switched back on in the app.
+        """
+        if self.power_state == POWER_STATE_FORCED_ON:
+            return
 
         frame = await self.client.get_frame(self.frame_id)
         time_zone = frame.get("time_zone") or "Europe/Berlin"
-
-        saved_on_at = saved.get("scheduled_display_on_at")
-        saved_off_at = saved.get("scheduled_display_off_at")
-        scheduled_on_at = self._format_schedule_time(saved_on_at)
-        scheduled_off_at = self._format_schedule_time(saved_off_at)
-
-        # A saved value of None means the frame had no such time, so restoring
-        # None is faithful. A start time that is present but unreadable is a
-        # different matter: sending null would clear the time the display turns
-        # on and could leave the frame dark for good. Refuse before the write,
-        # so _persist_state is never reached and the saved values survive for a
-        # second attempt.
-        if saved_on_at is not None and scheduled_on_at is None:
-            raise AuraApiError(
-                "Refusing to restore the Aura display schedule: the saved "
-                "start time is unreadable, and writing null would clear it "
-                f"(scheduled_display_on_at={saved_on_at!r}). The saved "
-                "schedule is kept so switching on can be retried."
-            )
-
-        # An unreadable off time is not worth refusing over. The frame is off
-        # right now precisely because turn_off moved that value, so bailing out
-        # would strand it in the dark; restoring without one keeps the display
-        # on and only costs the sleep time.
-        if saved_off_at is not None and scheduled_off_at is None:
-            _LOGGER.warning(
-                "Saved Aura display off time %r is unreadable; turning the "
-                "frame back on without a scheduled off time",
-                saved_off_at,
-            )
+        saved_schedule = self.saved_schedule or self._schedule_of(frame)
 
         await self.client.update_frame(
             self.frame_id,
-            {
-                "scheduled_display_sleep": saved.get(
-                    "scheduled_display_sleep", True
+            self._schedule_write(
+                sleep=False,
+                time_zone=time_zone,
+                on_at=self._remembered_time(
+                    saved_schedule, "scheduled_display_on_at"
                 ),
-                "scheduled_display_on_at": scheduled_on_at,
-                "scheduled_display_off_at": scheduled_off_at,
-                "user_set_time_zone": time_zone,
-            },
+                off_at=self._remembered_time(
+                    saved_schedule, "scheduled_display_off_at"
+                ),
+            ),
         )
         await self._persist_state(
-            power_state=POWER_STATE_NORMAL,
-            saved_schedule=None,
+            power_state=POWER_STATE_FORCED_ON,
+            saved_schedule=saved_schedule,
         )
         await self.async_request_refresh()
 

@@ -35,3 +35,10 @@ FRAME = {
     "scheduled_display_off_at": "1969-12-31T22:00:00.000Z",
     "last_impression": {"asset": {"original_file_name": "foto.jpg"}},
 }
+
+# The schedule above, in the shape the config entry remembers it.
+SAVED_SCHEDULE = {
+    "scheduled_display_sleep": FRAME["scheduled_display_sleep"],
+    "scheduled_display_on_at": FRAME["scheduled_display_on_at"],
+    "scheduled_display_off_at": FRAME["scheduled_display_off_at"],
+}

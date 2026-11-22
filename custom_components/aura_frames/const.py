@@ -22,6 +22,7 @@ ATTR_LANDSCAPE_URL = "landscape_url"
 
 POWER_STATE_NORMAL = "normal"
 POWER_STATE_FORCED_OFF = "forced_off"
+POWER_STATE_FORCED_ON = "forced_on"
 
 STORAGE_SAVED_SCHEDULE = "saved_schedule"
 STORAGE_POWER_STATE = "power_state"
