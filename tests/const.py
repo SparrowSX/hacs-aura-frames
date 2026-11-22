@@ -36,9 +36,17 @@ FRAME = {
     "last_impression": {"asset": {"original_file_name": "foto.jpg"}},
 }
 
-# The schedule above, in the shape the config entry remembers it.
-SAVED_SCHEDULE = {
-    "scheduled_display_sleep": FRAME["scheduled_display_sleep"],
-    "scheduled_display_on_at": FRAME["scheduled_display_on_at"],
-    "scheduled_display_off_at": FRAME["scheduled_display_off_at"],
+# The one edge of that window the config entry remembers while the switch is
+# holding the frame: the time the frame falls asleep, kept while the switch
+# has moved it to now, and the time it wakes, kept while the switch has moved
+# that one instead.
+HELD_OFF_EDGE = {"scheduled_display_off_at": FRAME["scheduled_display_off_at"]}
+HELD_ON_EDGE = {"scheduled_display_on_at": FRAME["scheduled_display_on_at"]}
+
+# A record left behind by a version that remembered all three fields and
+# wrote both times with the same date.
+PRE_0_6_SAVED_SCHEDULE = {
+    "scheduled_display_sleep": False,
+    "scheduled_display_on_at": "1969-12-31T10:01:18.000Z",
+    "scheduled_display_off_at": "1969-12-31T18:54:14.000Z",
 }

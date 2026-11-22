@@ -24,6 +24,7 @@ from .const import (
     POWER_STATE_FORCED_ON,
     POWER_STATE_NORMAL,
     SCHEDULE_EPOCH_DATE,
+    SCHEDULE_NEXT_DAY_DATE,
     STORAGE_POWER_STATE,
     STORAGE_SAVED_SCHEDULE,
     UPDATE_INTERVAL_SECONDS,
@@ -32,6 +33,11 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 _SCHEDULE_TIME_RE = re.compile(r"(?:T|^)(\d{2}:\d{2}(?::\d{2})?)")
+
+# The two edges of the frame's sleep window: it is dark from the off time
+# until the on time.
+SCHEDULE_FIELD_OFF = "scheduled_display_off_at"
+SCHEDULE_FIELD_ON = "scheduled_display_on_at"
 
 type AuraFramesConfigEntry = ConfigEntry["AuraFramesCoordinator"]
 
@@ -214,36 +220,32 @@ class AuraFramesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # its old state until a later poll differed. Push it out here.
         self.async_update_listeners()
 
-    def _schedule_of(self, frame: dict[str, Any]) -> dict[str, Any]:
-        """Return the schedule fields of a frame record.
+    def _own_time(
+        self, frame: dict[str, Any], field: str, remembered: dict[str, Any]
+    ) -> str | None:
+        """Return the user's own time for one edge of the sleep window.
 
-        This is what gets remembered the first time the switch takes the
-        frame over, so that both directions have the user's own times to
-        write back afterwards.
-        """
-        return {
-            "scheduled_display_sleep": frame.get("scheduled_display_sleep", True),
-            "scheduled_display_on_at": frame.get("scheduled_display_on_at"),
-            "scheduled_display_off_at": frame.get("scheduled_display_off_at"),
-        }
+        The edge this integration is currently holding is in the config
+        entry, because the frame only carries the forced value -- reading it
+        back from the frame is what used to walk the schedule forward until
+        it stopped making sense. Every other edge is read from the frame, so
+        a change made in the Aura app meanwhile is picked up rather than
+        overwritten.
 
-    def _remembered_time(self, saved: dict[str, Any], field: str) -> str | None:
-        """Return a remembered schedule time ready to be written back.
-
-        None means there is nothing to write: either the frame had no such
+        None means there is nothing to write: either the frame has no such
         time, or the value cannot be read. Both are left out of the payload
         rather than sent as null, which would clear the user's own time.
         """
-        value = saved.get(field)
-        formatted = self._format_schedule_time(value)
-        if formatted is None and value is not None:
+        value = remembered[field] if field in remembered else frame.get(field)
+        clock = self._wall_clock(value)
+        if clock is None and value is not None:
             _LOGGER.warning(
                 "Aura schedule value %s=%r is unreadable; leaving the time "
                 "the frame has in place instead of clearing it",
                 field,
                 value,
             )
-        return formatted
+        return clock
 
     @staticmethod
     def _schedule_write(
@@ -253,7 +255,13 @@ class AuraFramesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         on_at: str | None,
         off_at: str | None,
     ) -> dict[str, Any]:
-        """Return an update payload that carries only readable times.
+        """Return an update payload for a sleep window given as wall clocks.
+
+        The two times are dated here, and the date is not decoration: the
+        frame sleeps from the off time until the on time, so an on time that
+        is not after the off time belongs to the following day. Writing both
+        on the same date, as this integration used to, asks for a window that
+        runs backwards.
 
         The PUT is a partial update, so a field left out keeps whatever the
         frame has. Only a field that is sent as null is cleared, and clearing
@@ -263,82 +271,120 @@ class AuraFramesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "scheduled_display_sleep": sleep,
             "user_set_time_zone": time_zone,
         }
-        if on_at is not None:
-            payload["scheduled_display_on_at"] = on_at
         if off_at is not None:
-            payload["scheduled_display_off_at"] = off_at
+            payload["scheduled_display_off_at"] = (
+                f"{SCHEDULE_EPOCH_DATE}T{off_at}.000Z"
+            )
+        if on_at is not None:
+            crosses_midnight = off_at is not None and on_at <= off_at
+            date = (
+                SCHEDULE_NEXT_DAY_DATE if crosses_midnight else SCHEDULE_EPOCH_DATE
+            )
+            payload["scheduled_display_on_at"] = f"{date}T{on_at}.000Z"
         return payload
 
     async def async_turn_off(self) -> None:
-        """Force the frame off by moving the scheduled off time to now.
+        """Force the frame off by moving the scheduled off time to now."""
+        await self._async_move_edge(
+            moved=SCHEDULE_FIELD_OFF,
+            kept=SCHEDULE_FIELD_ON,
+            power_state=POWER_STATE_FORCED_OFF,
+        )
 
-        A press writes even when the frame is already down as forced off,
-        for the same reason the other direction does: what this integration
-        noted down last time is not proof of what the frame is doing now.
+    async def async_turn_on(self) -> None:
+        """Force the display on by moving the scheduled on time to now."""
+        await self._async_move_edge(
+            moved=SCHEDULE_FIELD_ON,
+            kept=SCHEDULE_FIELD_OFF,
+            power_state=POWER_STATE_FORCED_ON,
+        )
+
+    async def _async_move_edge(
+        self, *, moved: str, kept: str, power_state: str
+    ) -> None:
+        """Move one edge of the sleep window to now and keep the other.
+
+        Both directions work the same way, mirrored. Off moves the time the
+        frame falls asleep to now; on moves the time it wakes up to now. The
+        other edge stays the user's: the frame keeps falling asleep at their
+        bedtime after a switch-on, and keeps waking at their morning time
+        after a switch-off.
+
+        Switching the frame's scheduled sleep off is not what this does, even
+        though it also lights an evening frame: that field is the mode switch
+        the Aura app shows as the automatic setting, where the frame's own
+        light sensor decides -- which is exactly how a frame switched on in
+        Home Assistant went dark again at dusk by itself. Forcing the display
+        means holding the schedule, so the schedule is what gets written.
+
+        A press writes even when Home Assistant already has the frame in the
+        state being asked for. The display can be put back to sleep behind our
+        back -- the Aura app, the cloud and the frame's own light sensor all
+        reach it too -- and refusing to write because of what was noted down
+        last time leaves the switch unable to insist: on in Home Assistant,
+        dark on the wall. One redundant request is the cheaper mistake.
         """
         frame = await self.client.get_frame(self.frame_id)
         time_zone = frame.get("time_zone") or "Europe/Berlin"
-        now = datetime.now(ZoneInfo(time_zone))
-        saved_schedule = self.saved_schedule or self._schedule_of(frame)
+        now = f"{datetime.now(ZoneInfo(time_zone)):%H:%M:%S}"
 
+        remembered = dict(self.saved_schedule or {})
+        # The edge being kept is handed back, so the opposite press undoes
+        # this one; the edge being overwritten is noted down in its place.
+        # Exactly one of the two is held at any time, which is why a value
+        # in the entry can no longer go stale behind a schedule the user
+        # changes in the Aura app.
+        kept_clock = self._own_time(frame, kept, remembered)
+        remembered.pop(kept, None)
+        remembered.setdefault(moved, frame.get(moved))
+
+        times = {moved: now, kept: kept_clock}
         await self.client.update_frame(
             self.frame_id,
             self._schedule_write(
                 sleep=True,
                 time_zone=time_zone,
-                on_at=self._remembered_time(
-                    saved_schedule, "scheduled_display_on_at"
-                ),
-                off_at=f"{SCHEDULE_EPOCH_DATE}T{now:%H:%M:%S}.000Z",
+                off_at=times[SCHEDULE_FIELD_OFF],
+                on_at=times[SCHEDULE_FIELD_ON],
             ),
         )
         await self._persist_state(
-            power_state=POWER_STATE_FORCED_OFF,
-            saved_schedule=saved_schedule,
+            power_state=power_state,
+            saved_schedule=remembered or None,
         )
         await self.async_request_refresh()
 
-    async def async_turn_on(self) -> None:
-        """Force the display on and park the frame's own sleep schedule.
+    async def async_set_display_mode(self, scheduled: bool) -> None:
+        """Switch between the frame's automatic mode and its schedule.
 
-        Writing the remembered schedule back is not enough to light the
-        display: the frame only shows photos inside that window, so a
-        restore once the scheduled off time has passed -- an evening
-        switch-on, which is the usual case -- leaves the frame dark while
-        Home Assistant reports the switch as on. Switching the scheduled
-        sleep off is what the schedule toggle in the Aura app does, and it
-        takes effect whatever the time is. The remembered times are written
-        alongside it, so the off time this integration moved is repaired and
-        the user's own schedule is there to be switched back on in the app.
-
-        A press repeats that write even when Home Assistant already has the
-        frame down as forced on. The display can go back to sleep behind our
-        back -- the Aura app, the cloud and the frame's own ambient light
-        sensor all reach it too -- and refusing to write because of what was
-        noted down last time leaves the switch stuck: on in Home Assistant,
-        dark on the wall, and no press able to insist. One redundant request
-        is the cheaper mistake.
+        Automatic is the frame deciding for itself by ambient light; the
+        schedule is the two times the switch works with. Handing the frame
+        back to automatic also writes the user's own times back, so that no
+        edge this integration moved is left behind in a schedule nobody
+        looks at any more.
         """
+        if scheduled:
+            await self.client.update_frame(
+                self.frame_id, {"scheduled_display_sleep": True}
+            )
+            await self.async_request_refresh()
+            return
+
         frame = await self.client.get_frame(self.frame_id)
         time_zone = frame.get("time_zone") or "Europe/Berlin"
-        saved_schedule = self.saved_schedule or self._schedule_of(frame)
-
+        remembered = dict(self.saved_schedule or {})
         await self.client.update_frame(
             self.frame_id,
             self._schedule_write(
                 sleep=False,
                 time_zone=time_zone,
-                on_at=self._remembered_time(
-                    saved_schedule, "scheduled_display_on_at"
-                ),
-                off_at=self._remembered_time(
-                    saved_schedule, "scheduled_display_off_at"
-                ),
+                off_at=self._own_time(frame, SCHEDULE_FIELD_OFF, remembered),
+                on_at=self._own_time(frame, SCHEDULE_FIELD_ON, remembered),
             ),
         )
         await self._persist_state(
-            power_state=POWER_STATE_FORCED_ON,
-            saved_schedule=saved_schedule,
+            power_state=POWER_STATE_NORMAL,
+            saved_schedule=None,
         )
         await self.async_request_refresh()
 
@@ -390,28 +436,14 @@ class AuraFramesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _wall_clock(value: Any) -> str | None:
         """Return the wall-clock time out of an Aura schedule value.
 
-        The frame sends these dated 1969-12-31 and suffixed with a ``Z`` it
-        does not mean; only the time of day carries meaning.
+        The frame sends these with an epoch date and a ``Z`` it does not
+        mean. The date says which day of the window the time belongs to and
+        is recomputed when a schedule is written, so only the time of day is
+        carried over.
         """
         if not isinstance(value, str):
             return None
         if match := _SCHEDULE_TIME_RE.search(value):
-            return match.group(1)
-        return None
-
-    @staticmethod
-    def _format_schedule_time(value: Any) -> str | None:
-        """Return an Aura schedule value using its required epoch date.
-
-        Aura treats these as wall-clock times, despite the trailing ``Z``. Keep
-        the time portion returned by the frame and always use the epoch date
-        accepted by the mobile application.
-        """
-        if not isinstance(value, str):
-            return None
-        if match := _SCHEDULE_TIME_RE.search(value):
-            time_value = match.group(1)
-            if len(time_value) == 5:
-                time_value = f"{time_value}:00"
-            return f"{SCHEDULE_EPOCH_DATE}T{time_value}.000Z"
+            clock = match.group(1)
+            return f"{clock}:00" if len(clock) == 5 else clock
         return None

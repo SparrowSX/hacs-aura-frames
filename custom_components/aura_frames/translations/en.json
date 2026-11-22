@@ -37,20 +37,43 @@
     }
   },
   "entity": {
-    "button": {
-      "next_photo": { "name": "Next photo" },
-      "previous_photo": { "name": "Previous photo" }
-    },
-    "switch": {
-      "display": { "name": "Display" }
-    },
     "binary_sensor": {
-      "online": { "name": "Online" }
+      "online": {
+        "name": "Online"
+      }
+    },
+    "button": {
+      "next_photo": {
+        "name": "Next photo"
+      },
+      "previous_photo": {
+        "name": "Previous photo"
+      }
+    },
+    "select": {
+      "display_mode": {
+        "name": "Display mode",
+        "state": {
+          "automatic": "Automatic",
+          "schedule": "Schedule"
+        }
+      }
     },
     "sensor": {
-      "current_photo": { "name": "Current photo" },
-      "num_assets": { "name": "Photo count" },
-      "wifi_network": { "name": "Wi-Fi network" }
+      "current_photo": {
+        "name": "Current photo"
+      },
+      "num_assets": {
+        "name": "Photo count"
+      },
+      "wifi_network": {
+        "name": "Wi-Fi network"
+      }
+    },
+    "switch": {
+      "display": {
+        "name": "Display"
+      }
     }
   }
 }

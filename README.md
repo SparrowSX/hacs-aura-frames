@@ -10,6 +10,7 @@ Home Assistant custom integration to control [Aura](https://auraframes.com) digi
 
 - Next / previous photo buttons
 - Display on/off via schedule manipulation (no native power API)
+- Display mode select: the frame's own automatic mode, or its schedule
 - Online status, current photo, photo count, Wi-Fi network sensors
 - Config flow with email/password login
 - German and English translations, including automatic re-authentication
@@ -44,18 +45,68 @@ If Aura rejects the stored session, the integration opens a new one once and car
 
 ## Display on/off behavior
 
-Aura frames have no direct power API, so the integration works through the display schedule the Aura app also writes.
+Aura frames have no direct power API, so the integration works through the
+display schedule the Aura app also writes. Two times delimit the frame's
+**sleep window**: the display is dark from the off time until the on time.
 
-- **Off** moves the scheduled off time to the current time and leaves the scheduled on time alone, so the display goes dark right away.
-- **On** switches the frame's scheduled sleep off, which is what the schedule toggle in the Aura app does. Writing the old schedule back is not enough: the frame only shows photos between its on and off time, so a restore after the off time has passed -- an evening switch-on -- would leave the frame dark while Home Assistant reported the switch as on.
+- **Off** moves the time the frame falls asleep to now.
+- **On** moves the time it wakes up to now.
 
-The times the frame had before the switch first took it over are remembered in the config entry and written back on every switch-on, which repairs the off time that switching off moved. They are never cleared, and a time the API reports in a shape the integration cannot read is left out of the update rather than sent as null, so the frame keeps whatever it has.
+Each direction leaves the other time alone, so it stays the user's own: a
+frame switched on in the evening still falls asleep at their bedtime, and one
+switched off still wakes at their morning time.
 
-Every press writes, even when Home Assistant already has the frame in the state being asked for. The display can be put back to sleep behind the integration's back -- the Aura app, the Aura cloud and the frame's own ambient light sensor all reach it too -- and skipping the request because of what was noted down last time would leave the switch unable to insist: on in Home Assistant, dark on the wall. One redundant request is the cheaper mistake.
+The date these times carry is not decoration. The frame sleeps from the off
+time until the on time, so a window that crosses midnight has its on time on
+the following day -- which is what the Aura app writes. The integration
+computes that date on every write; up to version 0.5.0 it dated both times
+alike, which asks the frame for a window that runs backwards.
 
-The switch carries the schedule the frame is actually running on as attributes (`scheduled_sleep`, `scheduled_on_at`, `scheduled_off_at`, `frame_time_zone`, `power_state`). These values decide whether the display is lit, so having them in Home Assistant turns "the frame is dark and I do not know why" into something you can look at.
+Switching the frame's *scheduled sleep* off is a different thing and not what
+this switch does, although it also lights an evening frame. That field is the
+mode the Aura app offers as the automatic setting, in which the frame's own
+ambient light sensor decides -- so a frame switched on that way went dark
+again at dusk by itself, while Home Assistant still reported the switch as on.
+The mode is a select entity instead (see below).
 
-To hand the frame back to its own schedule, switch its sleep schedule on again in the Aura app. Do not change the schedule there while the switch is off, since the remembered times are written back on the way on.
+The edge the switch has moved is remembered in the config entry, because the
+frame only carries the forced value; the other edge is read from the frame on
+every press, so a schedule changed in the Aura app meanwhile is picked up
+rather than overwritten. Exactly one of the two is ever held, and it is handed
+back by the opposite press. A time the API reports in a shape the integration
+cannot read is left out of the update rather than sent as null, so the frame
+keeps whatever it has.
+
+Every press writes, even when Home Assistant already has the frame in the
+state being asked for. The display can be put back to sleep behind the
+integration's back -- the Aura app, the Aura cloud and the frame's own ambient
+light sensor all reach it too -- and skipping the request because of what was
+noted down last time would leave the switch unable to insist: on in Home
+Assistant, dark on the wall. One redundant request is the cheaper mistake.
+
+The switch carries the schedule the frame is actually running on as attributes
+(`scheduled_sleep`, `scheduled_on_at`, `scheduled_off_at`, `frame_time_zone`,
+`power_state`). These values decide whether the display is lit, so having them
+in Home Assistant turns "the frame is dark and I do not know why" into
+something you can look at.
+
+## Display mode
+
+The frame decides when to light its display in one of two ways, and the Aura
+app shows the choice as a single setting:
+
+- **Automatic** -- the frame's own ambient light sensor decides. It comes on
+  in the morning and goes dark in the evening by itself, and the schedule is
+  ignored.
+- **Schedule** -- the two times above.
+
+The `select` entity switches between them, so an automation can hand the frame
+back to its sensor when nobody wants to be in charge of it. Choosing automatic
+also writes the user's own times back, so no edge the switch moved is left
+behind in a schedule nobody reads any more.
+
+The switch only means anything in schedule mode: it works by moving those
+times, so it puts the frame into schedule mode as it writes.
 
 ## Dropouts
 
@@ -75,12 +126,6 @@ window.
 
 ## What the frame is doing
 
-The Aura app offers an automatic mode for the display, in which the frame's
-own ambient light sensor decides when to light up -- it comes on in the
-morning and goes dark in the evening by itself. No documented field of the
-API obviously maps to that mode, so what a given write does to it is a
-question to be measured rather than guessed.
-
 Turn debug logging on for the integration and every poll prints the frame's
 own settings:
 
@@ -92,6 +137,10 @@ logger:
 
 Only plain values are printed; nested photo and environment data, and
 anything that looks like a credential, an address or a link, are left out.
+
+This is how the schedule fields above were worked out -- by writing a setting
+in the Aura app and diffing two polls -- and it is the first thing to reach
+for when a frame does something the integration does not explain.
 
 ## API notice
 

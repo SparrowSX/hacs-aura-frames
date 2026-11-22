@@ -52,4 +52,13 @@ ONLINE_GRACE_SECONDS = UPDATE_INTERVAL_SECONDS * 3
 # just opened was rejected.
 LOGIN_COOLDOWN_SECONDS = 300
 
+# Aura stores the display schedule as two wall-clock times carrying an epoch
+# date and a ``Z`` it does not mean. The pair delimits the frame's sleep
+# window -- the display is dark from the off time until the on time -- and the
+# date is what tells the frame whether that window crosses midnight: the Aura
+# app writes the on time on the day after the off time when it does. A pair
+# written on the same date describes a window that ends on the same day, so
+# dating both 1969-12-31 for an evening-to-morning schedule asks the frame for
+# a window that runs backwards.
 SCHEDULE_EPOCH_DATE = "1969-12-31"
+SCHEDULE_NEXT_DAY_DATE = "1970-01-01"

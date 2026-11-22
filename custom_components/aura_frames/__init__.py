@@ -16,6 +16,9 @@ from .const import (
     CONF_EMAIL,
     CONF_PASSWORD,
     CONF_USER_ID,
+    POWER_STATE_NORMAL,
+    STORAGE_POWER_STATE,
+    STORAGE_SAVED_SCHEDULE,
 )
 from .coordinator import AuraFramesConfigEntry, AuraFramesCoordinator
 
@@ -24,15 +27,51 @@ _LOGGER = logging.getLogger(__name__)
 PLATFORMS = [
     Platform.BUTTON,
     Platform.BINARY_SENSOR,
+    Platform.SELECT,
     Platform.SENSOR,
     Platform.SWITCH,
 ]
+
+
+@callback
+def _async_drop_a_pre_schedule_window_record(
+    hass: HomeAssistant, entry: AuraFramesConfigEntry
+) -> None:
+    """Forget a schedule remembered before the sleep window was understood.
+
+    Up to version 0.5.0 the switch remembered all three schedule fields and
+    wrote them back on every switch-on, and it wrote both times with the same
+    epoch date -- which asks the frame for a sleep window that runs backwards.
+    So those times are not a schedule anyone chose, and writing them back
+    would overwrite whatever the user has set since. The power state goes
+    with them: it describes an edge held under rules that no longer apply.
+
+    A record of the current shape holds only the edge being held, so it is
+    kept.
+    """
+    saved = entry.data.get(STORAGE_SAVED_SCHEDULE)
+    if not isinstance(saved, dict) or "scheduled_display_sleep" not in saved:
+        return
+
+    _LOGGER.info(
+        "Forgetting the display schedule remembered by an earlier version; "
+        "the frame's own times will be read again on the next switch press"
+    )
+    hass.config_entries.async_update_entry(
+        entry,
+        data={
+            **entry.data,
+            STORAGE_SAVED_SCHEDULE: None,
+            STORAGE_POWER_STATE: POWER_STATE_NORMAL,
+        },
+    )
 
 
 async def async_setup_entry(
     hass: HomeAssistant, entry: AuraFramesConfigEntry
 ) -> bool:
     """Set up Aura Frames from a config entry."""
+    _async_drop_a_pre_schedule_window_record(hass, entry)
     session = async_get_clientsession(hass)
 
     @callback

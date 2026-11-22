@@ -48,6 +48,15 @@
         "name": "Previous photo"
       }
     },
+    "select": {
+      "display_mode": {
+        "name": "Display mode",
+        "state": {
+          "automatic": "Automatic",
+          "schedule": "Schedule"
+        }
+      }
+    },
     "sensor": {
       "current_photo": {
         "name": "Current photo"
