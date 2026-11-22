@@ -116,8 +116,32 @@ class AuraFramesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             raise UpdateFailed(str(err)) from err
 
         self._bridged_failures = 0
+        if _LOGGER.isEnabledFor(logging.DEBUG):
+            _LOGGER.debug("Aura frame settings: %s", self._settings_of(frame))
         self._async_sync_device(frame)
         return frame
+
+    @staticmethod
+    def _settings_of(frame: dict[str, Any]) -> dict[str, Any]:
+        """Return the frame's own settings, for a debug line.
+
+        What makes the display light up is decided by fields of the frame
+        record, and the record carries more of them than this integration
+        knows about -- the Aura app offers an automatic mode that no
+        documented field obviously maps to. Printing the plain settings on
+        request is how that gets answered by measurement instead of guessing.
+
+        Only scalars are kept: the nested parts are photo and environment
+        data, and anything that looks like a credential, an address or a
+        link is left out, since a log gets shared.
+        """
+        hidden = ("token", "secret", "password", "email", "url", "key", "id")
+        return {
+            name: value
+            for name, value in sorted(frame.items())
+            if isinstance(value, (bool, int, float, str, type(None)))
+            and not any(word in name.lower() for word in hidden)
+        }
 
     def _async_sync_device(self, frame: dict[str, Any]) -> None:
         """Carry renames and firmware updates into the device registry.
@@ -246,10 +270,12 @@ class AuraFramesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return payload
 
     async def async_turn_off(self) -> None:
-        """Force the frame off by moving the scheduled off time to now."""
-        if self.power_state == POWER_STATE_FORCED_OFF:
-            return
+        """Force the frame off by moving the scheduled off time to now.
 
+        A press writes even when the frame is already down as forced off,
+        for the same reason the other direction does: what this integration
+        noted down last time is not proof of what the frame is doing now.
+        """
         frame = await self.client.get_frame(self.frame_id)
         time_zone = frame.get("time_zone") or "Europe/Berlin"
         now = datetime.now(ZoneInfo(time_zone))
@@ -284,10 +310,15 @@ class AuraFramesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         takes effect whatever the time is. The remembered times are written
         alongside it, so the off time this integration moved is repaired and
         the user's own schedule is there to be switched back on in the app.
-        """
-        if self.power_state == POWER_STATE_FORCED_ON:
-            return
 
+        A press repeats that write even when Home Assistant already has the
+        frame down as forced on. The display can go back to sleep behind our
+        back -- the Aura app, the cloud and the frame's own ambient light
+        sensor all reach it too -- and refusing to write because of what was
+        noted down last time leaves the switch stuck: on in Home Assistant,
+        dark on the wall, and no press able to insist. One redundant request
+        is the cheaper mistake.
+        """
         frame = await self.client.get_frame(self.frame_id)
         time_zone = frame.get("time_zone") or "Europe/Berlin"
         saved_schedule = self.saved_schedule or self._schedule_of(frame)
@@ -332,6 +363,40 @@ class AuraFramesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         asset = impression.get("asset")
         if isinstance(asset, dict):
             return asset
+        return None
+
+    def display_schedule(self) -> dict[str, Any]:
+        """Return the frame's own sleep schedule in readable form.
+
+        These three values decide whether the display is lit, and nothing in
+        Home Assistant used to show them: a frame that stayed dark could
+        only be diagnosed by reading the log. They come from the frame on
+        every poll, so the switch can carry them as attributes.
+        """
+        frame = self.data or {}
+        return {
+            "scheduled_sleep": frame.get("scheduled_display_sleep"),
+            "scheduled_on_at": self._wall_clock(
+                frame.get("scheduled_display_on_at")
+            ),
+            "scheduled_off_at": self._wall_clock(
+                frame.get("scheduled_display_off_at")
+            ),
+            "frame_time_zone": frame.get("time_zone"),
+            "power_state": self.power_state,
+        }
+
+    @staticmethod
+    def _wall_clock(value: Any) -> str | None:
+        """Return the wall-clock time out of an Aura schedule value.
+
+        The frame sends these dated 1969-12-31 and suffixed with a ``Z`` it
+        does not mean; only the time of day carries meaning.
+        """
+        if not isinstance(value, str):
+            return None
+        if match := _SCHEDULE_TIME_RE.search(value):
+            return match.group(1)
         return None
 
     @staticmethod

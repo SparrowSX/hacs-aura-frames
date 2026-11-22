@@ -12,6 +12,7 @@ from pytest_homeassistant_custom_component.common import (
 )
 
 from custom_components.aura_frames.api import AuraApiError, AuraAuthError
+from custom_components.aura_frames.coordinator import AuraFramesCoordinator
 from custom_components.aura_frames.const import (
     CONF_AUTH_TOKEN,
     CONF_USER_ID,
@@ -144,12 +145,17 @@ async def test_turn_on_forces_a_frame_the_switch_never_touched(
     assert init_integration.data[STORAGE_SAVED_SCHEDULE] == SAVED_SCHEDULE
 
 
-async def test_a_second_turn_on_writes_nothing(
+async def test_a_second_turn_on_writes_again(
     hass: HomeAssistant,
     init_integration: MockConfigEntry,
     mock_client: AsyncMock,
 ) -> None:
-    """Once the display is forced on there is nothing left to send."""
+    """A press insists, even on a frame already noted down as forced on.
+
+    The display can be put back to sleep behind our back, and then the note
+    from last time is worth nothing. Skipping the write would leave the
+    switch unable to act: on in Home Assistant, dark on the wall.
+    """
     entity_id = switch_entity_id(hass)
     await hass.services.async_call(
         "switch", "turn_on", {"entity_id": entity_id}, blocking=True
@@ -160,7 +166,45 @@ async def test_a_second_turn_on_writes_nothing(
         "switch", "turn_on", {"entity_id": entity_id}, blocking=True
     )
 
-    mock_client.update_frame.assert_not_called()
+    written = mock_client.update_frame.call_args.args[1]
+    assert written["scheduled_display_sleep"] is False
+
+
+async def test_a_second_turn_off_writes_again(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+    mock_client: AsyncMock,
+) -> None:
+    """The same holds for the other direction."""
+    entity_id = switch_entity_id(hass)
+    await hass.services.async_call(
+        "switch", "turn_off", {"entity_id": entity_id}, blocking=True
+    )
+    mock_client.update_frame.reset_mock()
+
+    await hass.services.async_call(
+        "switch", "turn_off", {"entity_id": entity_id}, blocking=True
+    )
+
+    written = mock_client.update_frame.call_args.args[1]
+    assert written["scheduled_display_sleep"] is True
+    # The second off must not remember its own forced off time as the
+    # user's: the schedule captured by the first one stands.
+    assert init_integration.data[STORAGE_SAVED_SCHEDULE] == SAVED_SCHEDULE
+
+
+async def test_the_switch_shows_the_schedule_the_frame_runs_on(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+) -> None:
+    """The three values that decide whether the display is lit are visible."""
+    state = hass.states.get(switch_entity_id(hass))
+
+    assert state.attributes["scheduled_sleep"] is True
+    assert state.attributes["scheduled_on_at"] == "07:30:00"
+    assert state.attributes["scheduled_off_at"] == "22:00:00"
+    assert state.attributes["frame_time_zone"] == "Europe/Berlin"
+    assert state.attributes["power_state"] == POWER_STATE_NORMAL
 
 
 async def test_the_off_time_the_switch_moved_is_repaired(
@@ -542,3 +586,25 @@ async def test_a_connection_error_at_setup_still_fails_the_setup(
     await hass.async_block_till_done()
 
     assert config_entry.state is ConfigEntryState.SETUP_RETRY
+
+
+def test_the_debug_settings_line_leaves_out_what_a_log_should_not_carry() -> None:
+    """Only plain settings go into the log: no nesting, nothing sensitive."""
+    settings = AuraFramesCoordinator._settings_of(
+        {
+            "scheduled_display_sleep": True,
+            "auto_brightness": False,
+            "name": "Flur",
+            "auth_token": "hunter2",
+            "user_email": "someone@example.com",
+            "preview_url": "https://example.com/a.jpg",
+            "frame_environment": {"last_online_at": "2026-11-22T12:00:00Z"},
+            "last_impression": {"asset": {}},
+        }
+    )
+
+    assert settings == {
+        "auto_brightness": False,
+        "name": "Flur",
+        "scheduled_display_sleep": True,
+    }

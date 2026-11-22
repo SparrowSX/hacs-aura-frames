@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -37,6 +39,11 @@ class AuraFramePowerSwitch(AuraFrameEntity, SwitchEntity):
         state -- it forces the display on.
         """
         return self.coordinator.power_state != POWER_STATE_FORCED_OFF
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Expose the sleep schedule the frame is actually running on."""
+        return self.coordinator.display_schedule()
 
     async def async_turn_on(self, **kwargs) -> None:
         """Force the display on."""
