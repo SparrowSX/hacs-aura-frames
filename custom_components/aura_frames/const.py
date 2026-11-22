@@ -33,6 +33,16 @@ STORAGE_POWER_STATE = "power_state"
 # still feels live for a photo frame and no faster.
 UPDATE_INTERVAL_SECONDS = 300
 
+# How many polls in a row may fail before the entities go unavailable.
+# A failed poll used to drop every entity straight to unavailable for a whole
+# interval, and a service call that lands in such a window is discarded by
+# Home Assistant with "entity not currently available" -- a scheduled
+# switch-on simply never happens. The frame's state hardly moves between
+# polls, so serving the last reading across a brief outage is both closer to
+# the truth and far less disruptive than going dark. Three polls bridges a
+# quarter of an hour, after which something is wrong enough to show.
+MAX_BRIDGED_POLL_FAILURES = 3
+
 # How stale the frame's own heartbeat may be before it counts as offline.
 # Polling every five minutes means the heartbeat read here is up to that old
 # already, so the window has to be a multiple of the interval.

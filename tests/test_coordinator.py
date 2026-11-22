@@ -11,11 +11,12 @@ from pytest_homeassistant_custom_component.common import (
     async_fire_time_changed,
 )
 
-from custom_components.aura_frames.api import AuraAuthError
+from custom_components.aura_frames.api import AuraApiError, AuraAuthError
 from custom_components.aura_frames.const import (
     CONF_AUTH_TOKEN,
     CONF_USER_ID,
     DOMAIN,
+    MAX_BRIDGED_POLL_FAILURES,
     POWER_STATE_FORCED_OFF,
     POWER_STATE_FORCED_ON,
     POWER_STATE_NORMAL,
@@ -438,3 +439,106 @@ async def test_a_session_the_api_rejects_reaches_reauth(
     assert config_entry.state is ConfigEntryState.SETUP_ERROR
     flows = hass.config_entries.flow.async_progress_by_handler(DOMAIN)
     assert [flow["context"]["source"] for flow in flows] == ["reauth"]
+
+
+def wifi_entity_id(hass: HomeAssistant) -> str:
+    """Return the entity id of the frame's Wi-Fi sensor.
+
+    Its reading is a plain string, so a test can tell "the last reading is
+    still being served" from "the entity is gone" at a glance.
+    """
+    entity_ids = [
+        entity_id
+        for entity_id in hass.states.async_entity_ids("sensor")
+        if entity_id.endswith("wi_fi_network")
+    ]
+    assert len(entity_ids) == 1
+    return entity_ids[0]
+
+
+async def poll(hass: HomeAssistant, times: int = 1) -> None:
+    """Let the coordinator run its update the given number of times."""
+    for attempt in range(1, times + 1):
+        async_fire_time_changed(
+            hass,
+            dt_util.utcnow()
+            + timedelta(seconds=UPDATE_INTERVAL_SECONDS * attempt + 1),
+        )
+        await hass.async_block_till_done()
+
+
+async def test_a_failed_poll_keeps_the_last_reading(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+    mock_client: AsyncMock,
+) -> None:
+    """One failed request must not take every entity down with it.
+
+    The host's DNS fails every so often. Dropping to unavailable for a whole
+    interval also makes Home Assistant discard service calls aimed at the
+    frame, so a scheduled switch-on silently never happens -- much worse
+    than serving a reading that is one interval old.
+    """
+    entity_id = wifi_entity_id(hass)
+    assert hass.states.get(entity_id).state == "WLAN"
+
+    mock_client.get_frame.side_effect = AuraApiError(
+        "Connection error: Cannot connect to host api.pushd.com:443"
+    )
+    await poll(hass)
+
+    assert hass.states.get(entity_id).state == "WLAN"
+    assert hass.states.get(switch_entity_id(hass)).state == "on"
+
+
+async def test_entities_go_unavailable_once_the_outage_outlasts_the_bridge(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+    mock_client: AsyncMock,
+) -> None:
+    """Bridging is for a blip; a real outage still has to be visible."""
+    entity_id = wifi_entity_id(hass)
+    mock_client.get_frame.side_effect = AuraApiError("weg")
+    mock_client.get_frame.reset_mock()
+
+    await poll(hass, MAX_BRIDGED_POLL_FAILURES)
+    # Every one of those polls has to have been tried, or the bridge would
+    # look longer than it is.
+    assert mock_client.get_frame.call_count == MAX_BRIDGED_POLL_FAILURES
+    assert hass.states.get(entity_id).state == "WLAN"
+
+    await poll(hass, MAX_BRIDGED_POLL_FAILURES + 1)
+    assert hass.states.get(entity_id).state == "unavailable"
+
+
+async def test_a_good_poll_clears_the_bridge(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+    mock_client: AsyncMock,
+    frame: dict,
+) -> None:
+    """Otherwise scattered failures would add up to an outage over days."""
+    entity_id = wifi_entity_id(hass)
+
+    for _ in range(MAX_BRIDGED_POLL_FAILURES * 2):
+        mock_client.get_frame.side_effect = AuraApiError("weg")
+        await poll(hass)
+        mock_client.get_frame.side_effect = lambda *args, **kwargs: frame
+        await poll(hass)
+
+    assert hass.states.get(entity_id).state == "WLAN"
+
+
+async def test_a_connection_error_at_setup_still_fails_the_setup(
+    hass: HomeAssistant,
+    config_entry: MockConfigEntry,
+    mock_client: AsyncMock,
+) -> None:
+    """With no reading to fall back on there is nothing to bridge with."""
+    mock_client.get_frame.side_effect = AuraApiError("Connection error")
+
+    config_entry.add_to_hass(hass)
+    assert not await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert config_entry.state is ConfigEntryState.SETUP_RETRY

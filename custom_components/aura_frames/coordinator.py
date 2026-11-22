@@ -18,6 +18,7 @@ from .api import AuraApiError, AuraAuthError, AuraClient
 from .const import (
     CONF_FRAME_ID,
     DOMAIN,
+    MAX_BRIDGED_POLL_FAILURES,
     ONLINE_GRACE_SECONDS,
     POWER_STATE_FORCED_OFF,
     POWER_STATE_FORCED_ON,
@@ -58,6 +59,7 @@ class AuraFramesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Entries created before the config flow normalized this may hold a
         # non-string id.
         self.frame_id: str = str(entry.data[CONF_FRAME_ID])
+        self._bridged_failures = 0
         super().__init__(
             hass,
             _LOGGER,
@@ -91,8 +93,29 @@ class AuraFramesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except AuraAuthError as err:
             raise ConfigEntryAuthFailed("Aura credentials have expired") from err
         except AuraApiError as err:
+            # Hand back the last reading rather than drop everything to
+            # unavailable over one failed request. The host's DNS fails every
+            # so often, and each failure cost a full interval in which every
+            # entity was gone and Home Assistant discarded any service call
+            # aimed at it -- so a scheduled switch-on could silently not
+            # happen. The heartbeat in that stale reading keeps ageing, so
+            # the online sensor still reports the frame as offline once the
+            # outage outlasts its grace window.
+            if self.data is not None and (
+                self._bridged_failures < MAX_BRIDGED_POLL_FAILURES
+            ):
+                self._bridged_failures += 1
+                _LOGGER.debug(
+                    "Aura poll %s of at most %s failed, keeping the last "
+                    "reading: %s",
+                    self._bridged_failures,
+                    MAX_BRIDGED_POLL_FAILURES,
+                    err,
+                )
+                return self.data
             raise UpdateFailed(str(err)) from err
 
+        self._bridged_failures = 0
         self._async_sync_device(frame)
         return frame
 

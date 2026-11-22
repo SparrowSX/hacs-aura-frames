@@ -13,6 +13,7 @@ Home Assistant custom integration to control [Aura](https://auraframes.com) digi
 - Online status, current photo, photo count, Wi-Fi network sensors
 - Config flow with email/password login
 - German and English translations, including automatic re-authentication
+- Keeps serving the last reading across a brief API or DNS outage
 
 ## Installation
 
@@ -50,6 +51,22 @@ Aura frames have no direct power API, so the integration works through the displ
 The times the frame had before the switch first took it over are remembered in the config entry and written back on every switch-on, which repairs the off time that switching off moved. They are never cleared, and a time the API reports in a shape the integration cannot read is left out of the update rather than sent as null, so the frame keeps whatever it has.
 
 To hand the frame back to its own schedule, switch its sleep schedule on again in the Aura app. Do not change the schedule there while the switch is off, since the remembered times are written back on the way on.
+
+## Dropouts
+
+The frame is polled every five minutes. A failed request does not take the
+entities down with it: the coordinator serves the last reading for up to three
+polls in a row, and only then reports the frame as unavailable.
+
+This matters beyond the gap in the history. While an entity is unavailable,
+Home Assistant discards service calls aimed at it -- "Referenced entities are
+missing or not currently available" -- so a scheduled switch-on simply never
+happens. A frame's state hardly moves between polls, so a reading one interval
+old is both closer to the truth and far less disruptive than going dark.
+
+The online sensor is not fooled by this: the heartbeat in a stale reading keeps
+ageing, so it reports the frame as offline once an outage outlasts its grace
+window.
 
 ## API notice
 
