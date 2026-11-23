@@ -23,6 +23,8 @@ from custom_components.aura_frames.const import (
     POWER_STATE_NORMAL,
     STORAGE_POWER_STATE,
     STORAGE_SAVED_SCHEDULE,
+    STORAGE_WANTED_OFF,
+    STORAGE_WANTED_ON,
     UPDATE_INTERVAL_SECONDS,
 )
 from homeassistant.config_entries import ConfigEntryState
@@ -33,8 +35,9 @@ from homeassistant.util import dt as dt_util
 from .const import (
     FRAME_ID,
     HELD_OFF_EDGE,
-    HELD_ON_EDGE,
     PRE_0_6_SAVED_SCHEDULE,
+    WANTED_OFF,
+    WANTED_ON,
 )
 
 
@@ -62,19 +65,21 @@ def select_entity_id(hass: HomeAssistant) -> str:
     return entity_ids[0]
 
 
-def hold_off(
-    hass: HomeAssistant,
-    entry: MockConfigEntry,
-    held: dict,
-) -> None:
-    """Put the entry into the forced-off state, holding one schedule edge."""
+def time_entity_ids(hass: HomeAssistant) -> dict[str, str]:
+    """Return the wanted wake and sleep time entities, keyed on/off."""
+    entity_ids = hass.states.async_entity_ids("time")
+    assert len(entity_ids) == 2
+    return {
+        ("on" if "wake" in entity_id else "off"): entity_id
+        for entity_id in entity_ids
+    }
+
+
+def force_off(hass: HomeAssistant, entry: MockConfigEntry) -> None:
+    """Put the entry into the forced-off state."""
     hass.config_entries.async_update_entry(
         entry,
-        data={
-            **entry.data,
-            STORAGE_POWER_STATE: POWER_STATE_FORCED_OFF,
-            STORAGE_SAVED_SCHEDULE: held,
-        },
+        data={**entry.data, STORAGE_POWER_STATE: POWER_STATE_FORCED_OFF},
     )
 
 
@@ -83,13 +88,63 @@ def at_half_past_six(freezer) -> None:
     freezer.move_to("2026-11-22T17:30:00+00:00")
 
 
+async def test_the_wanted_schedule_is_taken_from_the_frame_once(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+    mock_client: AsyncMock,
+    frame: dict,
+) -> None:
+    """A frame the switch has not touched is running what the user wants.
+
+    That is the only guess available for an entry that has never held a
+    wanted schedule, and the right one. From then on the wanted times are
+    changed in Home Assistant, not read back.
+    """
+    assert init_integration.data[STORAGE_WANTED_ON] == WANTED_ON
+    assert init_integration.data[STORAGE_WANTED_OFF] == WANTED_OFF
+
+    states = time_entity_ids(hass)
+    assert hass.states.get(states["on"]).state == WANTED_ON
+    assert hass.states.get(states["off"]).state == WANTED_OFF
+
+
+async def test_a_forced_time_is_never_taken_for_the_wanted_one(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+    mock_client: AsyncMock,
+    frame: dict,
+    freezer,
+) -> None:
+    """Reading the frame back is what walked the schedule out of shape.
+
+    Once a wanted time is held, no poll touches it again -- and the value
+    the frame reports after a switch-off is a forced one, not a schedule
+    anyone chose.
+    """
+    at_half_past_six(freezer)
+    await hass.services.async_call(
+        "switch",
+        "turn_off",
+        {"entity_id": switch_entity_id(hass)},
+        blocking=True,
+    )
+    frame["scheduled_display_off_at"] = "1969-12-31T18:30:00.000Z"
+
+    async_fire_time_changed(
+        hass, dt_util.utcnow() + timedelta(seconds=UPDATE_INTERVAL_SECONDS + 1)
+    )
+    await hass.async_block_till_done()
+
+    assert init_integration.data[STORAGE_WANTED_OFF] == WANTED_OFF
+
+
 async def test_turn_off_moves_the_time_the_frame_falls_asleep(
     hass: HomeAssistant,
     init_integration: MockConfigEntry,
     mock_client: AsyncMock,
     freezer,
 ) -> None:
-    """Off moves one edge of the sleep window and keeps the other."""
+    """Off moves one edge of the sleep window and writes the wanted other."""
     at_half_past_six(freezer)
 
     await hass.services.async_call(
@@ -102,14 +157,10 @@ async def test_turn_off_moves_the_time_the_frame_falls_asleep(
     written = mock_client.update_frame.call_args.args[1]
     assert written["scheduled_display_sleep"] is True
     assert written["scheduled_display_off_at"] == "1969-12-31T18:30:00.000Z"
-    # The frame now sleeps from this evening until the user's own morning
-    # time, so that morning is the day after. Dating both times alike, as
-    # this integration used to, describes a window running backwards.
+    # The frame now sleeps from this evening until the wanted wake time, so
+    # that time is the day after. Dating both alike, as versions up to 0.5.0
+    # did, describes a window running backwards.
     assert written["scheduled_display_on_at"] == "1970-01-01T07:30:00.000Z"
-
-    # Only the edge just overwritten is remembered; the frame carries the
-    # other one itself.
-    assert init_integration.data[STORAGE_SAVED_SCHEDULE] == HELD_OFF_EDGE
     assert init_integration.data[STORAGE_POWER_STATE] == POWER_STATE_FORCED_OFF
 
 
@@ -129,7 +180,7 @@ async def test_turn_on_moves_the_time_the_frame_wakes(
     """
     entity_id = switch_entity_id(hass)
     at_half_past_six(freezer)
-    hold_off(hass, init_integration, HELD_OFF_EDGE)
+    force_off(hass, init_integration)
     mock_client.update_frame.reset_mock()
 
     await hass.services.async_call(
@@ -139,8 +190,8 @@ async def test_turn_on_moves_the_time_the_frame_wakes(
     written = mock_client.update_frame.call_args.args[1]
     assert written["scheduled_display_sleep"] is True
     assert written["scheduled_display_on_at"] == "1970-01-01T18:30:00.000Z"
-    # The user's own bedtime stays theirs: the frame is lit from now until
-    # 22:00 rather than around the clock.
+    # The wanted bedtime stands: the frame is lit from now until 22:00
+    # rather than around the clock.
     assert written["scheduled_display_off_at"] == "1969-12-31T22:00:00.000Z"
     assert init_integration.data[STORAGE_POWER_STATE] == POWER_STATE_FORCED_ON
     assert hass.states.get(entity_id).state == "on"
@@ -158,7 +209,6 @@ async def test_a_window_that_ends_on_the_same_day_keeps_one_date(
     belong to the same day and the window no longer crosses midnight.
     """
     freezer.move_to("2026-11-22T22:30:00+00:00")
-    hold_off(hass, init_integration, HELD_OFF_EDGE)
     mock_client.update_frame.reset_mock()
 
     await hass.services.async_call(
@@ -199,53 +249,33 @@ async def test_turn_on_forces_a_frame_the_switch_never_touched(
     written = mock_client.update_frame.call_args.args[1]
     assert written["scheduled_display_on_at"] == "1970-01-01T18:30:00.000Z"
     assert init_integration.data[STORAGE_POWER_STATE] == POWER_STATE_FORCED_ON
-    assert init_integration.data[STORAGE_SAVED_SCHEDULE] == HELD_ON_EDGE
 
 
-async def test_a_second_turn_on_writes_again(
+async def test_a_second_press_writes_again_and_repairs_the_first(
     hass: HomeAssistant,
     init_integration: MockConfigEntry,
     mock_client: AsyncMock,
+    frame: dict,
     freezer,
 ) -> None:
-    """A press insists, even on a frame already noted down as forced on.
+    """A press insists, and never carries a forced time forward.
 
-    The display can be put back to sleep behind our back, and then the note
-    from last time is worth nothing. Skipping the write would leave the
-    switch unable to act: on in Home Assistant, dark on the wall.
+    The display can be put back to sleep behind our back, so a press has to
+    write even when Home Assistant already has the frame in the state being
+    asked for. And because every press writes the wanted schedule for the
+    edge it is not moving, the forced time from the press before is
+    overwritten rather than taken for the user's own -- which is how the
+    sleep time used to walk forward until the frame stopped coming on.
     """
     entity_id = switch_entity_id(hass)
     at_half_past_six(freezer)
     await hass.services.async_call(
         "switch", "turn_on", {"entity_id": entity_id}, blocking=True
     )
+    # What the frame looks like once Aura has applied that write.
+    frame["scheduled_display_on_at"] = "1970-01-01T18:30:00.000Z"
     mock_client.update_frame.reset_mock()
-
-    await hass.services.async_call(
-        "switch", "turn_on", {"entity_id": entity_id}, blocking=True
-    )
-
-    written = mock_client.update_frame.call_args.args[1]
-    assert written["scheduled_display_sleep"] is True
-    assert written["scheduled_display_on_at"] == "1970-01-01T18:30:00.000Z"
-    # The second press must not take its own forced wake time for the
-    # user's: the edge captured by the first one stands.
-    assert init_integration.data[STORAGE_SAVED_SCHEDULE] == HELD_ON_EDGE
-
-
-async def test_a_second_turn_off_writes_again(
-    hass: HomeAssistant,
-    init_integration: MockConfigEntry,
-    mock_client: AsyncMock,
-    freezer,
-) -> None:
-    """The same holds for the other direction."""
-    entity_id = switch_entity_id(hass)
-    at_half_past_six(freezer)
-    await hass.services.async_call(
-        "switch", "turn_off", {"entity_id": entity_id}, blocking=True
-    )
-    mock_client.update_frame.reset_mock()
+    freezer.move_to("2026-11-22T18:00:00+00:00")
 
     await hass.services.async_call(
         "switch", "turn_off", {"entity_id": entity_id}, blocking=True
@@ -253,89 +283,90 @@ async def test_a_second_turn_off_writes_again(
 
     written = mock_client.update_frame.call_args.args[1]
     assert written["scheduled_display_sleep"] is True
-    assert init_integration.data[STORAGE_SAVED_SCHEDULE] == HELD_OFF_EDGE
+    assert written["scheduled_display_off_at"] == "1969-12-31T19:00:00.000Z"
+    assert written["scheduled_display_on_at"] == "1970-01-01T07:30:00.000Z"
 
 
-async def test_the_switch_shows_the_schedule_the_frame_runs_on(
+async def test_the_switch_shows_the_schedule_and_what_is_wanted(
     hass: HomeAssistant,
     init_integration: MockConfigEntry,
 ) -> None:
-    """The three values that decide whether the display is lit are visible."""
+    """The values that decide whether the display is lit are visible.
+
+    Next to them is what the user asked for, so the two can be compared at
+    a glance -- which is the only comparison available, since the frame
+    cannot say whether a difference is drift or a change made in the app.
+    """
     state = hass.states.get(switch_entity_id(hass))
 
     assert state.attributes["scheduled_sleep"] is True
     assert state.attributes["scheduled_on_at"] == "07:30:00"
     assert state.attributes["scheduled_off_at"] == "22:00:00"
+    assert state.attributes["wanted_on_at"] == WANTED_ON
+    assert state.attributes["wanted_off_at"] == WANTED_OFF
     assert state.attributes["frame_time_zone"] == "Europe/Berlin"
     assert state.attributes["power_state"] == POWER_STATE_NORMAL
 
 
-async def test_the_edge_the_switch_holds_is_handed_back(
+async def test_a_changed_wanted_time_is_sent_once(
     hass: HomeAssistant,
     init_integration: MockConfigEntry,
     mock_client: AsyncMock,
-    frame: dict,
-    freezer,
 ) -> None:
-    """The user's own bedtime survives a switch-off and comes back on.
+    """Changing the wanted schedule writes it to the frame there and then.
 
-    Turning off overwrites the frame's off time, so the record read on the
-    way back carries that forced value. Writing the record back as found is
-    what walked the off time forward until the frame stopped coming on.
+    Nothing holds the frame to it afterwards: the Aura app writes that
+    record too, and the switch moves one of its times on purpose, so a
+    difference cannot be told apart from intent.
     """
-    entity_id = switch_entity_id(hass)
-    at_half_past_six(freezer)
-    await hass.services.async_call(
-        "switch", "turn_off", {"entity_id": entity_id}, blocking=True
-    )
-
-    # What the frame looks like once Aura has applied that write.
-    frame["scheduled_display_off_at"] = "1969-12-31T18:30:00.000Z"
+    force_off(hass, init_integration)
+    mock_client.update_frame.reset_mock()
 
     await hass.services.async_call(
-        "switch", "turn_on", {"entity_id": entity_id}, blocking=True
-    )
-
-    written = mock_client.update_frame.call_args.args[1]
-    assert written["scheduled_display_off_at"] == "1969-12-31T22:00:00.000Z"
-    # Handed back, so it is no longer held: what the switch holds now is the
-    # wake time it has just moved.
-    assert init_integration.data[STORAGE_SAVED_SCHEDULE] == HELD_ON_EDGE
-
-
-async def test_the_edge_the_switch_does_not_hold_follows_the_aura_app(
-    hass: HomeAssistant,
-    init_integration: MockConfigEntry,
-    mock_client: AsyncMock,
-    frame: dict,
-    freezer,
-) -> None:
-    """A time changed in the Aura app is not overwritten by an old note.
-
-    Only the edge the switch is holding comes out of the config entry. The
-    other is read from the frame on every press, so a schedule changed in
-    the app stands -- a note that outlived the schedule it described is what
-    made a press destroy the user's own times.
-    """
-    at_half_past_six(freezer)
-    frame["scheduled_display_on_at"] = "1970-01-01T06:00:00.000Z"
-
-    await hass.services.async_call(
-        "switch",
-        "turn_off",
-        {"entity_id": switch_entity_id(hass)},
+        "time",
+        "set_value",
+        {"entity_id": time_entity_ids(hass)["off"], "time": "23:00:00"},
         blocking=True,
     )
 
     written = mock_client.update_frame.call_args.args[1]
-    assert written["scheduled_display_on_at"] == "1970-01-01T06:00:00.000Z"
+    assert written["scheduled_display_off_at"] == "1969-12-31T23:00:00.000Z"
+    assert written["scheduled_display_on_at"] == "1970-01-01T07:30:00.000Z"
+    # The mode is the select's business, so a time change leaves it alone.
+    assert "scheduled_display_sleep" not in written
+    assert init_integration.data[STORAGE_WANTED_OFF] == "23:00:00"
+    # Both edges are now the wanted ones, so nothing is forced any more.
+    assert init_integration.data[STORAGE_POWER_STATE] == POWER_STATE_NORMAL
 
 
-async def test_an_unreadable_held_time_is_left_out(
+async def test_the_button_sends_the_wanted_schedule_again(
     hass: HomeAssistant,
     init_integration: MockConfigEntry,
     mock_client: AsyncMock,
-    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Drift the integration cannot detect can still be undone by hand."""
+    force_off(hass, init_integration)
+    mock_client.update_frame.reset_mock()
+
+    await hass.services.async_call(
+        "button",
+        "press",
+        {"entity_id": "button.flur_send_schedule"},
+        blocking=True,
+    )
+
+    written = mock_client.update_frame.call_args.args[1]
+    assert written["scheduled_display_off_at"] == "1969-12-31T22:00:00.000Z"
+    assert written["scheduled_display_on_at"] == "1970-01-01T07:30:00.000Z"
+    assert "scheduled_display_sleep" not in written
+    assert init_integration.data[STORAGE_POWER_STATE] == POWER_STATE_NORMAL
+
+
+async def test_a_time_the_frame_reports_unreadably_is_left_out(
+    hass: HomeAssistant,
+    config_entry: MockConfigEntry,
+    mock_client: AsyncMock,
+    frame: dict,
     freezer,
 ) -> None:
     """Sending null would clear the user's schedule; omitting keeps it.
@@ -344,8 +375,11 @@ async def test_an_unreadable_held_time_is_left_out(
     whatever the frame has. That is strictly better than refusing to switch
     the frame on, which used to strand it in the dark.
     """
+    frame["scheduled_display_off_at"] = "so kaputt"
+    config_entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
     at_half_past_six(freezer)
-    hold_off(hass, init_integration, {"scheduled_display_off_at": "so kaputt"})
     mock_client.update_frame.reset_mock()
 
     await hass.services.async_call(
@@ -360,32 +394,8 @@ async def test_an_unreadable_held_time_is_left_out(
     # With no sleep time going out there is nothing for the wake time to
     # fall after, so it keeps the plain epoch date.
     assert written["scheduled_display_on_at"] == "1969-12-31T18:30:00.000Z"
-    assert written["scheduled_display_sleep"] is True
-    assert "unreadable" in caplog.text
-    assert init_integration.data[STORAGE_POWER_STATE] == POWER_STATE_FORCED_ON
-
-
-async def test_a_missing_held_time_is_left_out(
-    hass: HomeAssistant,
-    init_integration: MockConfigEntry,
-    mock_client: AsyncMock,
-    freezer,
-) -> None:
-    """None means the frame had no off time, so there is none to write."""
-    at_half_past_six(freezer)
-    hold_off(hass, init_integration, {"scheduled_display_off_at": None})
-    mock_client.update_frame.reset_mock()
-
-    await hass.services.async_call(
-        "switch",
-        "turn_on",
-        {"entity_id": switch_entity_id(hass)},
-        blocking=True,
-    )
-
-    written = mock_client.update_frame.call_args.args[1]
-    assert "scheduled_display_off_at" not in written
-    assert written["scheduled_display_on_at"] == "1969-12-31T18:30:00.000Z"
+    # Nor is an unreadable value taken up as something the user wants.
+    assert STORAGE_WANTED_OFF not in config_entry.data
 
 
 async def test_the_mode_select_shows_how_the_frame_decides(
@@ -410,74 +420,80 @@ async def test_the_mode_select_shows_how_the_frame_decides(
     assert hass.states.get(entity_id).state == "automatic"
 
 
-async def test_handing_the_frame_back_to_automatic_gives_the_edge_back(
+@pytest.mark.parametrize(
+    ("option", "sleep"), [("automatic", False), ("schedule", True)]
+)
+async def test_a_mode_change_carries_the_wanted_schedule(
     hass: HomeAssistant,
     init_integration: MockConfigEntry,
     mock_client: AsyncMock,
-    frame: dict,
-    freezer,
+    option: str,
+    sleep: bool,
 ) -> None:
-    """Nothing the switch forced is left behind in a schedule nobody reads.
+    """Either mode leaves the frame with the schedule the user asked for.
 
-    In automatic mode the frame's light sensor decides and the schedule is
-    ignored, so a forced edge left in it would come back the moment someone
+    In automatic mode the schedule is ignored, so an edge the switch forced
+    would otherwise sit there waiting to come back the moment someone
     switches the schedule on again in the app.
     """
-    at_half_past_six(freezer)
-    await hass.services.async_call(
-        "switch",
-        "turn_off",
-        {"entity_id": switch_entity_id(hass)},
-        blocking=True,
-    )
-    frame["scheduled_display_off_at"] = "1969-12-31T18:30:00.000Z"
+    force_off(hass, init_integration)
     mock_client.update_frame.reset_mock()
 
     await hass.services.async_call(
         "select",
         "select_option",
-        {"entity_id": select_entity_id(hass), "option": "automatic"},
+        {"entity_id": select_entity_id(hass), "option": option},
         blocking=True,
     )
 
     written = mock_client.update_frame.call_args.args[1]
-    assert written["scheduled_display_sleep"] is False
+    assert written["scheduled_display_sleep"] is sleep
     assert written["scheduled_display_off_at"] == "1969-12-31T22:00:00.000Z"
     assert written["scheduled_display_on_at"] == "1970-01-01T07:30:00.000Z"
-    assert init_integration.data[STORAGE_SAVED_SCHEDULE] is None
     assert init_integration.data[STORAGE_POWER_STATE] == POWER_STATE_NORMAL
 
 
-async def test_choosing_the_schedule_only_switches_the_mode(
+async def test_a_remembered_edge_becomes_a_wanted_time(
     hass: HomeAssistant,
-    init_integration: MockConfigEntry,
+    config_entry: MockConfigEntry,
     mock_client: AsyncMock,
+    frame: dict,
 ) -> None:
-    """Going back to the schedule must not move either of its times."""
-    mock_client.update_frame.reset_mock()
+    """The note an earlier version kept was the user's own time; keep it.
 
-    await hass.services.async_call(
-        "select",
-        "select_option",
-        {"entity_id": select_entity_id(hass), "option": "schedule"},
-        blocking=True,
+    Letting it go would mean adopting whatever the frame reports instead --
+    and while the switch is holding the frame off, that is the forced time.
+    """
+    frame["scheduled_display_off_at"] = "1969-12-31T18:30:00.000Z"
+    config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        config_entry,
+        data={
+            **config_entry.data,
+            STORAGE_SAVED_SCHEDULE: HELD_OFF_EDGE,
+            STORAGE_POWER_STATE: POWER_STATE_FORCED_OFF,
+        },
     )
 
-    written = mock_client.update_frame.call_args.args[1]
-    assert written == {"scheduled_display_sleep": True}
+    assert await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert STORAGE_SAVED_SCHEDULE not in config_entry.data
+    assert config_entry.data[STORAGE_WANTED_OFF] == WANTED_OFF
+    assert config_entry.data[STORAGE_WANTED_ON] == WANTED_ON
+    assert config_entry.data[STORAGE_POWER_STATE] == POWER_STATE_FORCED_OFF
 
 
-async def test_a_schedule_remembered_by_an_earlier_version_is_dropped(
+async def test_a_schedule_remembered_by_an_even_earlier_version_is_dropped(
     hass: HomeAssistant,
     config_entry: MockConfigEntry,
     mock_client: AsyncMock,
 ) -> None:
-    """Those times are not a schedule anyone chose, so they are forgotten.
+    """Those times are not a schedule anyone chose, so they are discarded.
 
-    Up to 0.5.0 the switch remembered all three schedule fields and wrote
-    both times with the same date, which asks for a window running
-    backwards. Keeping such a record would have the next press write it back
-    over whatever the user has set since.
+    Up to 0.5.0 the note carried all three schedule fields and both times
+    were written with the same date, which asks for a window running
+    backwards. Taking them up as wanted times would make that permanent.
     """
     config_entry.add_to_hass(hass)
     hass.config_entries.async_update_entry(
@@ -492,31 +508,9 @@ async def test_a_schedule_remembered_by_an_earlier_version_is_dropped(
     assert await hass.config_entries.async_setup(config_entry.entry_id)
     await hass.async_block_till_done()
 
-    assert config_entry.data[STORAGE_SAVED_SCHEDULE] is None
-    assert config_entry.data[STORAGE_POWER_STATE] == POWER_STATE_NORMAL
-
-
-async def test_a_held_edge_survives_a_restart(
-    hass: HomeAssistant,
-    config_entry: MockConfigEntry,
-    mock_client: AsyncMock,
-) -> None:
-    """A record of the current shape is the user's own time; it is kept."""
-    config_entry.add_to_hass(hass)
-    hass.config_entries.async_update_entry(
-        config_entry,
-        data={
-            **config_entry.data,
-            STORAGE_SAVED_SCHEDULE: HELD_OFF_EDGE,
-            STORAGE_POWER_STATE: POWER_STATE_FORCED_OFF,
-        },
-    )
-
-    assert await hass.config_entries.async_setup(config_entry.entry_id)
-    await hass.async_block_till_done()
-
-    assert config_entry.data[STORAGE_SAVED_SCHEDULE] == HELD_OFF_EDGE
-    assert config_entry.data[STORAGE_POWER_STATE] == POWER_STATE_FORCED_OFF
+    assert STORAGE_SAVED_SCHEDULE not in config_entry.data
+    assert config_entry.data[STORAGE_WANTED_ON] == WANTED_ON
+    assert config_entry.data[STORAGE_WANTED_OFF] == WANTED_OFF
 
 
 async def test_polling_stops_asking_for_the_schedule(

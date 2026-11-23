@@ -48,6 +48,9 @@
       },
       "previous_photo": {
         "name": "Previous photo"
+      },
+      "send_schedule": {
+        "name": "Send schedule"
       }
     },
     "select": {
@@ -73,6 +76,14 @@
     "switch": {
       "display": {
         "name": "Display"
+      }
+    },
+    "time": {
+      "wanted_on": {
+        "name": "Wake time"
+      },
+      "wanted_off": {
+        "name": "Sleep time"
       }
     }
   }

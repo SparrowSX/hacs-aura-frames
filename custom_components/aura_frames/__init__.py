@@ -16,11 +16,17 @@ from .const import (
     CONF_EMAIL,
     CONF_PASSWORD,
     CONF_USER_ID,
-    POWER_STATE_NORMAL,
-    STORAGE_POWER_STATE,
     STORAGE_SAVED_SCHEDULE,
+    STORAGE_WANTED_OFF,
+    STORAGE_WANTED_ON,
 )
-from .coordinator import AuraFramesConfigEntry, AuraFramesCoordinator
+from .coordinator import (
+    SCHEDULE_FIELD_OFF,
+    SCHEDULE_FIELD_ON,
+    AuraFramesConfigEntry,
+    AuraFramesCoordinator,
+    wall_clock,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -30,48 +36,59 @@ PLATFORMS = [
     Platform.SELECT,
     Platform.SENSOR,
     Platform.SWITCH,
+    Platform.TIME,
 ]
 
 
 @callback
-def _async_drop_a_pre_schedule_window_record(
+def _async_take_up_the_remembered_schedule(
     hass: HomeAssistant, entry: AuraFramesConfigEntry
 ) -> None:
-    """Forget a schedule remembered before the sleep window was understood.
+    """Turn a schedule remembered by an earlier version into a wanted one.
 
-    Up to version 0.5.0 the switch remembered all three schedule fields and
-    wrote them back on every switch-on, and it wrote both times with the same
-    epoch date -- which asks the frame for a sleep window that runs backwards.
-    So those times are not a schedule anyone chose, and writing them back
-    would overwrite whatever the user has set since. The power state goes
-    with them: it describes an edge held under rules that no longer apply.
+    Up to 0.6.0 the switch noted down the edge it had just overwritten, so
+    that the opposite press could give it back. That note was the only thing
+    standing in for the user's intent, and it was never visible or editable.
+    The wanted schedule took its place, so the note is taken up as the first
+    wanted time and the key is dropped.
 
-    A record of the current shape holds only the edge being held, so it is
-    kept.
+    A note from 0.5.0 or earlier carries the sleep flag as well, and its
+    times are not a schedule anyone chose -- both were written with the same
+    epoch date, which asks the frame for a sleep window running backwards.
+    Those are discarded rather than taken up.
     """
-    saved = entry.data.get(STORAGE_SAVED_SCHEDULE)
-    if not isinstance(saved, dict) or "scheduled_display_sleep" not in saved:
+    if STORAGE_SAVED_SCHEDULE not in entry.data:
         return
 
-    _LOGGER.info(
-        "Forgetting the display schedule remembered by an earlier version; "
-        "the frame's own times will be read again on the next switch press"
-    )
-    hass.config_entries.async_update_entry(
-        entry,
-        data={
-            **entry.data,
-            STORAGE_SAVED_SCHEDULE: None,
-            STORAGE_POWER_STATE: POWER_STATE_NORMAL,
-        },
-    )
+    saved = entry.data[STORAGE_SAVED_SCHEDULE]
+    data = {
+        key: value
+        for key, value in entry.data.items()
+        if key != STORAGE_SAVED_SCHEDULE
+    }
+    if isinstance(saved, dict) and "scheduled_display_sleep" not in saved:
+        for field, storage_key in (
+            (SCHEDULE_FIELD_ON, STORAGE_WANTED_ON),
+            (SCHEDULE_FIELD_OFF, STORAGE_WANTED_OFF),
+        ):
+            if data.get(storage_key) is None and (
+                clock := wall_clock(saved.get(field))
+            ):
+                data[storage_key] = clock
+                _LOGGER.info(
+                    "Taking the remembered %s (%s) up as the wanted schedule",
+                    field,
+                    clock,
+                )
+
+    hass.config_entries.async_update_entry(entry, data=data)
 
 
 async def async_setup_entry(
     hass: HomeAssistant, entry: AuraFramesConfigEntry
 ) -> bool:
     """Set up Aura Frames from a config entry."""
-    _async_drop_a_pre_schedule_window_record(hass, entry)
+    _async_take_up_the_remembered_schedule(hass, entry)
     session = async_get_clientsession(hass)
 
     @callback

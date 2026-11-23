@@ -7,7 +7,8 @@ from custom_components.aura_frames.const import (
     CONF_PASSWORD,
     POWER_STATE_NORMAL,
     STORAGE_POWER_STATE,
-    STORAGE_SAVED_SCHEDULE,
+    STORAGE_WANTED_OFF,
+    STORAGE_WANTED_ON,
 )
 
 FRAME_ID = "42"
@@ -18,7 +19,6 @@ ENTRY_DATA = {
     CONF_FRAME_ID: FRAME_ID,
     CONF_DEVICE_ID: "0BE1A0DB-0000-0000-0000-000000000000",
     STORAGE_POWER_STATE: POWER_STATE_NORMAL,
-    STORAGE_SAVED_SCHEDULE: None,
 }
 
 # A frame as the API returns it, with a schedule that runs 07:30 to 22:00.
@@ -36,12 +36,17 @@ FRAME = {
     "last_impression": {"asset": {"original_file_name": "foto.jpg"}},
 }
 
-# The one edge of that window the config entry remembers while the switch is
-# holding the frame: the time the frame falls asleep, kept while the switch
-# has moved it to now, and the time it wakes, kept while the switch has moved
-# that one instead.
+# One edge of that window as versions up to 0.6.0 noted it down: the edge
+# the switch had just overwritten, kept so the opposite press could give it
+# back. 0.7.0 takes such a note up as a wanted time.
 HELD_OFF_EDGE = {"scheduled_display_off_at": FRAME["scheduled_display_off_at"]}
 HELD_ON_EDGE = {"scheduled_display_on_at": FRAME["scheduled_display_on_at"]}
+
+# The same window as the wanted schedule, in the shape the config entry
+# holds it from 0.7.0 on.
+WANTED_ON = "07:30:00"
+WANTED_OFF = "22:00:00"
+WANTED = {STORAGE_WANTED_ON: WANTED_ON, STORAGE_WANTED_OFF: WANTED_OFF}
 
 # A record left behind by a version that remembered all three fields and
 # wrote both times with the same date.

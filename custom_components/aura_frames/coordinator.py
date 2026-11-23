@@ -9,7 +9,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -26,7 +26,8 @@ from .const import (
     SCHEDULE_EPOCH_DATE,
     SCHEDULE_NEXT_DAY_DATE,
     STORAGE_POWER_STATE,
-    STORAGE_SAVED_SCHEDULE,
+    STORAGE_WANTED_OFF,
+    STORAGE_WANTED_ON,
     UPDATE_INTERVAL_SECONDS,
 )
 
@@ -40,6 +41,22 @@ SCHEDULE_FIELD_OFF = "scheduled_display_off_at"
 SCHEDULE_FIELD_ON = "scheduled_display_on_at"
 
 type AuraFramesConfigEntry = ConfigEntry["AuraFramesCoordinator"]
+
+
+def wall_clock(value: Any) -> str | None:
+    """Return the wall-clock time out of an Aura schedule value.
+
+    The frame sends these with an epoch date and a ``Z`` it does not mean.
+    The date says which day of the sleep window the time belongs to and is
+    recomputed whenever a schedule is written, so only the time of day is
+    carried over. None means the value cannot be read as a time.
+    """
+    if not isinstance(value, str):
+        return None
+    if match := _SCHEDULE_TIME_RE.search(value):
+        clock = match.group(1)
+        return f"{clock}:00" if len(clock) == 5 else clock
+    return None
 
 
 def frame_model(frame: dict[str, Any]) -> str | None:
@@ -81,9 +98,52 @@ class AuraFramesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return self.config_entry.data.get(STORAGE_POWER_STATE, POWER_STATE_NORMAL)
 
     @property
-    def saved_schedule(self) -> dict[str, Any] | None:
-        """Return saved schedule values when power is overridden."""
-        return self.config_entry.data.get(STORAGE_SAVED_SCHEDULE)
+    def wanted_on(self) -> str | None:
+        """Return the wall clock the user wants the frame to wake at."""
+        return self.config_entry.data.get(STORAGE_WANTED_ON)
+
+    @property
+    def wanted_off(self) -> str | None:
+        """Return the wall clock the user wants the frame to sleep at."""
+        return self.config_entry.data.get(STORAGE_WANTED_OFF)
+
+    def _wanted_times(self, frame: dict[str, Any]) -> dict[str, str | None]:
+        """Return the schedule to write, as wall clocks.
+
+        The wanted times are the authority. Only a wanted time that has
+        never been set falls back to what the frame carries, which is what
+        happens once, on the first poll after an upgrade, before the frame's
+        own pair is adopted.
+        """
+        return {
+            "on_at": self.wanted_on or wall_clock(frame.get(SCHEDULE_FIELD_ON)),
+            "off_at": self.wanted_off or wall_clock(frame.get(SCHEDULE_FIELD_OFF)),
+        }
+
+    @callback
+    def _adopt_wanted_times(self, frame: dict[str, Any]) -> None:
+        """Take the frame's own times as the wanted schedule, once.
+
+        An entry from before the schedule was configurable has no wanted
+        times, and neither does a new one. Whatever the frame is running is
+        the only guess available, and it is the right one for a frame the
+        switch has not touched. From then on the wanted times are the
+        user's, changed in Home Assistant rather than read back.
+        """
+        adopted: dict[str, str] = {}
+        if self.wanted_on is None and (
+            clock := wall_clock(frame.get(SCHEDULE_FIELD_ON))
+        ):
+            adopted[STORAGE_WANTED_ON] = clock
+        if self.wanted_off is None and (
+            clock := wall_clock(frame.get(SCHEDULE_FIELD_OFF))
+        ):
+            adopted[STORAGE_WANTED_OFF] = clock
+        if adopted:
+            self.hass.config_entries.async_update_entry(
+                self.config_entry,
+                data={**self.config_entry.data, **adopted},
+            )
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch frame data from the API."""
@@ -124,6 +184,7 @@ class AuraFramesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._bridged_failures = 0
         if _LOGGER.isEnabledFor(logging.DEBUG):
             _LOGGER.debug("Aura frame settings: %s", self._settings_of(frame))
+        self._adopt_wanted_times(frame)
         self._async_sync_device(frame)
         return frame
 
@@ -199,58 +260,23 @@ class AuraFramesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self.client.previous_photo(self.frame_id)
         await self.async_request_refresh()
 
-    async def _persist_state(
-        self,
-        *,
-        power_state: str,
-        saved_schedule: dict[str, Any] | None,
-    ) -> None:
-        """Persist power override state on the config entry."""
-        new_data = {
-            **self.config_entry.data,
-            STORAGE_POWER_STATE: power_state,
-            STORAGE_SAVED_SCHEDULE: saved_schedule,
-        }
+    @callback
+    def _persist(self, **values: Any) -> None:
+        """Persist entry-held state and tell the entities about it."""
         self.hass.config_entries.async_update_entry(
-            self.config_entry, data=new_data
+            self.config_entry, data={**self.config_entry.data, **values}
         )
         # The switch reads power_state from the entry, not from the polled
-        # frame data. With always_update=False a refresh that happens to
-        # return identical data notifies nobody, so the toggle would sit on
+        # frame data, and the time entities read the wanted schedule from
+        # there too. With always_update=False a refresh that happens to
+        # return identical data notifies nobody, so an entity would sit on
         # its old state until a later poll differed. Push it out here.
         self.async_update_listeners()
-
-    def _own_time(
-        self, frame: dict[str, Any], field: str, remembered: dict[str, Any]
-    ) -> str | None:
-        """Return the user's own time for one edge of the sleep window.
-
-        The edge this integration is currently holding is in the config
-        entry, because the frame only carries the forced value -- reading it
-        back from the frame is what used to walk the schedule forward until
-        it stopped making sense. Every other edge is read from the frame, so
-        a change made in the Aura app meanwhile is picked up rather than
-        overwritten.
-
-        None means there is nothing to write: either the frame has no such
-        time, or the value cannot be read. Both are left out of the payload
-        rather than sent as null, which would clear the user's own time.
-        """
-        value = remembered[field] if field in remembered else frame.get(field)
-        clock = self._wall_clock(value)
-        if clock is None and value is not None:
-            _LOGGER.warning(
-                "Aura schedule value %s=%r is unreadable; leaving the time "
-                "the frame has in place instead of clearing it",
-                field,
-                value,
-            )
-        return clock
 
     @staticmethod
     def _schedule_write(
         *,
-        sleep: bool,
+        sleep: bool | None,
         time_zone: str,
         on_at: str | None,
         off_at: str | None,
@@ -265,12 +291,12 @@ class AuraFramesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         The PUT is a partial update, so a field left out keeps whatever the
         frame has. Only a field that is sent as null is cleared, and clearing
-        a display schedule is never what the switch is for.
+        a display schedule is never what the switch is for. A sleep of None
+        leaves the mode alone, for a write that is about the times only.
         """
-        payload: dict[str, Any] = {
-            "scheduled_display_sleep": sleep,
-            "user_set_time_zone": time_zone,
-        }
+        payload: dict[str, Any] = {"user_set_time_zone": time_zone}
+        if sleep is not None:
+            payload["scheduled_display_sleep"] = sleep
         if off_at is not None:
             payload["scheduled_display_off_at"] = (
                 f"{SCHEDULE_EPOCH_DATE}T{off_at}.000Z"
@@ -286,29 +312,24 @@ class AuraFramesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def async_turn_off(self) -> None:
         """Force the frame off by moving the scheduled off time to now."""
         await self._async_move_edge(
-            moved=SCHEDULE_FIELD_OFF,
-            kept=SCHEDULE_FIELD_ON,
-            power_state=POWER_STATE_FORCED_OFF,
+            moved="off_at", power_state=POWER_STATE_FORCED_OFF
         )
 
     async def async_turn_on(self) -> None:
         """Force the display on by moving the scheduled on time to now."""
         await self._async_move_edge(
-            moved=SCHEDULE_FIELD_ON,
-            kept=SCHEDULE_FIELD_OFF,
-            power_state=POWER_STATE_FORCED_ON,
+            moved="on_at", power_state=POWER_STATE_FORCED_ON
         )
 
-    async def _async_move_edge(
-        self, *, moved: str, kept: str, power_state: str
-    ) -> None:
+    async def _async_move_edge(self, *, moved: str, power_state: str) -> None:
         """Move one edge of the sleep window to now and keep the other.
 
         Both directions work the same way, mirrored. Off moves the time the
         frame falls asleep to now; on moves the time it wakes up to now. The
-        other edge stays the user's: the frame keeps falling asleep at their
-        bedtime after a switch-on, and keeps waking at their morning time
-        after a switch-off.
+        other edge is written from the wanted schedule, so the frame keeps
+        falling asleep at the user's bedtime after a switch-on and keeps
+        waking at their morning time after a switch-off -- and a press
+        repairs the edge an earlier press moved rather than carrying it on.
 
         Switching the frame's scheduled sleep off is not what this does, even
         though it also lights an evening frame: that field is the mode switch
@@ -326,66 +347,69 @@ class AuraFramesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """
         frame = await self.client.get_frame(self.frame_id)
         time_zone = frame.get("time_zone") or "Europe/Berlin"
-        now = f"{datetime.now(ZoneInfo(time_zone)):%H:%M:%S}"
+        times = self._wanted_times(frame)
+        times[moved] = f"{datetime.now(ZoneInfo(time_zone)):%H:%M:%S}"
 
-        remembered = dict(self.saved_schedule or {})
-        # The edge being kept is handed back, so the opposite press undoes
-        # this one; the edge being overwritten is noted down in its place.
-        # Exactly one of the two is held at any time, which is why a value
-        # in the entry can no longer go stale behind a schedule the user
-        # changes in the Aura app.
-        kept_clock = self._own_time(frame, kept, remembered)
-        remembered.pop(kept, None)
-        remembered.setdefault(moved, frame.get(moved))
+        await self.client.update_frame(
+            self.frame_id,
+            self._schedule_write(sleep=True, time_zone=time_zone, **times),
+        )
+        self._persist(**{STORAGE_POWER_STATE: power_state})
+        await self.async_request_refresh()
 
-        times = {moved: now, kept: kept_clock}
+    async def async_set_wanted_time(
+        self, *, on_at: str | None = None, off_at: str | None = None
+    ) -> None:
+        """Change a wanted time and send the schedule to the frame."""
+        changed: dict[str, str] = {}
+        if on_at is not None:
+            changed[STORAGE_WANTED_ON] = on_at
+        if off_at is not None:
+            changed[STORAGE_WANTED_OFF] = off_at
+        self._persist(**changed)
+        await self.async_send_wanted_schedule()
+
+    async def async_send_wanted_schedule(self) -> None:
+        """Send the wanted schedule to the frame, as it stands.
+
+        Nothing reconciles this continuously, and that is deliberate: the
+        frame can be changed from the Aura app, and the switch moves one of
+        the times on purpose, so a difference between the frame and the
+        wanted schedule cannot be told apart from intent. What can honestly
+        be done is to send the wanted schedule when it changes, and again
+        whenever someone asks for it -- after which no edge is forced any
+        more, so the power state goes back to normal.
+        """
+        frame = await self.client.get_frame(self.frame_id)
+        time_zone = frame.get("time_zone") or "Europe/Berlin"
         await self.client.update_frame(
             self.frame_id,
             self._schedule_write(
-                sleep=True,
-                time_zone=time_zone,
-                off_at=times[SCHEDULE_FIELD_OFF],
-                on_at=times[SCHEDULE_FIELD_ON],
+                sleep=None, time_zone=time_zone, **self._wanted_times(frame)
             ),
         )
-        await self._persist_state(
-            power_state=power_state,
-            saved_schedule=remembered or None,
-        )
+        self._persist(**{STORAGE_POWER_STATE: POWER_STATE_NORMAL})
         await self.async_request_refresh()
 
     async def async_set_display_mode(self, scheduled: bool) -> None:
         """Switch between the frame's automatic mode and its schedule.
 
         Automatic is the frame deciding for itself by ambient light; the
-        schedule is the two times the switch works with. Handing the frame
-        back to automatic also writes the user's own times back, so that no
-        edge this integration moved is left behind in a schedule nobody
-        looks at any more.
+        schedule is the two times the switch works with. Either way the
+        wanted schedule goes along with the mode change, so that no edge
+        this integration forced is left behind in it.
         """
-        if scheduled:
-            await self.client.update_frame(
-                self.frame_id, {"scheduled_display_sleep": True}
-            )
-            await self.async_request_refresh()
-            return
-
         frame = await self.client.get_frame(self.frame_id)
         time_zone = frame.get("time_zone") or "Europe/Berlin"
-        remembered = dict(self.saved_schedule or {})
         await self.client.update_frame(
             self.frame_id,
             self._schedule_write(
-                sleep=False,
+                sleep=scheduled,
                 time_zone=time_zone,
-                off_at=self._own_time(frame, SCHEDULE_FIELD_OFF, remembered),
-                on_at=self._own_time(frame, SCHEDULE_FIELD_ON, remembered),
+                **self._wanted_times(frame),
             ),
         )
-        await self._persist_state(
-            power_state=POWER_STATE_NORMAL,
-            saved_schedule=None,
-        )
+        self._persist(**{STORAGE_POWER_STATE: POWER_STATE_NORMAL})
         await self.async_request_refresh()
 
     def is_online(self) -> bool:
@@ -422,28 +446,10 @@ class AuraFramesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         frame = self.data or {}
         return {
             "scheduled_sleep": frame.get("scheduled_display_sleep"),
-            "scheduled_on_at": self._wall_clock(
-                frame.get("scheduled_display_on_at")
-            ),
-            "scheduled_off_at": self._wall_clock(
-                frame.get("scheduled_display_off_at")
-            ),
+            "scheduled_on_at": wall_clock(frame.get(SCHEDULE_FIELD_ON)),
+            "scheduled_off_at": wall_clock(frame.get(SCHEDULE_FIELD_OFF)),
+            "wanted_on_at": self.wanted_on,
+            "wanted_off_at": self.wanted_off,
             "frame_time_zone": frame.get("time_zone"),
             "power_state": self.power_state,
         }
-
-    @staticmethod
-    def _wall_clock(value: Any) -> str | None:
-        """Return the wall-clock time out of an Aura schedule value.
-
-        The frame sends these with an epoch date and a ``Z`` it does not
-        mean. The date says which day of the window the time belongs to and
-        is recomputed when a schedule is written, so only the time of day is
-        carried over.
-        """
-        if not isinstance(value, str):
-            return None
-        if match := _SCHEDULE_TIME_RE.search(value):
-            clock = match.group(1)
-            return f"{clock}:00" if len(clock) == 5 else clock
-        return None

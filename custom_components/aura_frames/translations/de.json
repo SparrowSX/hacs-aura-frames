@@ -46,6 +46,9 @@
       },
       "previous_photo": {
         "name": "Vorheriges Foto"
+      },
+      "send_schedule": {
+        "name": "Zeitplan senden"
       }
     },
     "select": {
@@ -71,6 +74,14 @@
     "switch": {
       "display": {
         "name": "Anzeige"
+      }
+    },
+    "time": {
+      "wanted_on": {
+        "name": "Einschaltzeit"
+      },
+      "wanted_off": {
+        "name": "Ausschaltzeit"
       }
     }
   }

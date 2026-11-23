@@ -27,6 +27,15 @@ POWER_STATE_FORCED_ON = "forced_on"
 STORAGE_SAVED_SCHEDULE = "saved_schedule"
 STORAGE_POWER_STATE = "power_state"
 
+# The schedule the user wants the frame to run: two wall-clock times, held
+# in the config entry so that every entity reads the same one and it
+# survives a restart. The frame's own record is not that schedule -- the
+# switch overwrites one of its times whenever it forces the display, and the
+# Aura app writes it too -- so what it reports can only be read as the
+# current state, never as the intent.
+STORAGE_WANTED_ON = "wanted_on_at"
+STORAGE_WANTED_OFF = "wanted_off_at"
+
 # Aura's API is the mobile app's, and the app only talks to it while
 # someone has it open. A frame that is polled around the clock sees far more
 # traffic on its account than Aura ever designed for, so poll at a rate that

@@ -10,6 +10,7 @@ Home Assistant custom integration to control [Aura](https://auraframes.com) digi
 
 - Next / previous photo buttons
 - Display on/off via schedule manipulation (no native power API)
+- The wanted schedule as two editable times, sent to the frame when changed
 - Display mode select: the frame's own automatic mode, or its schedule
 - Online status, current photo, photo count, Wi-Fi network sensors
 - Config flow with email/password login
@@ -43,6 +44,35 @@ The session Aura hands out at login is stored alongside them and reused across r
 
 If Aura rejects the stored session, the integration opens a new one once and carries on. When that one is rejected too, Home Assistant starts its normal re-authentication flow instead of logging in over and over. Enter the current Aura credentials there; the selected frame and its display schedule remain unchanged.
 
+## The wanted schedule
+
+Two `time` entities hold the schedule the frame is meant to run -- **Wake
+time** and **Sleep time**. They live in the config entry, so they survive a
+restart and can be set from the dashboard or from an automation.
+
+They exist because the frame's own record cannot be read as the intent. The
+switch overwrites one of its two times whenever it forces the display, the
+Aura app writes it too, and nothing in the record says which of those a value
+came from. Earlier versions tried to remember the time they had overwritten,
+and that note was invisible, uneditable, and wrong as soon as anything else
+changed the schedule.
+
+Changing either time sends the pair to the frame once. Nothing holds the frame
+to it afterwards, and that is deliberate: a difference between the frame and
+the wanted schedule cannot be told apart from a change someone made on
+purpose, so there is nothing to reconcile against. What there is instead:
+
+- the **Send schedule** button, which writes the wanted schedule again, for
+  when the frame has drifted from it;
+- the switch attributes, which carry both the schedule the frame is running
+  and the wanted one, so the two can be compared at a glance.
+
+An entry that has never held a wanted schedule takes up whatever the frame is
+running, once, on the first poll. From then on the times are the user's.
+
+The mode is left alone by these writes, so the times only take effect while
+the frame is in schedule mode (see below).
+
 ## Display on/off behavior
 
 Aura frames have no direct power API, so the integration works through the
@@ -52,9 +82,12 @@ display schedule the Aura app also writes. Two times delimit the frame's
 - **Off** moves the time the frame falls asleep to now.
 - **On** moves the time it wakes up to now.
 
-Each direction leaves the other time alone, so it stays the user's own: a
-frame switched on in the evening still falls asleep at their bedtime, and one
-switched off still wakes at their morning time.
+Each direction writes the wanted time for the edge it is not moving, so that
+edge stays the user's: a frame switched on in the evening still falls asleep
+at the wanted bedtime, and one switched off still wakes at the wanted morning
+time. It also repairs the edge an earlier press moved, instead of carrying a
+forced value forward -- which is what used to walk the sleep time forward
+until the frame stopped coming on at all.
 
 The date these times carry is not decoration. The frame sleeps from the off
 time until the on time, so a window that crosses midnight has its on time on
@@ -69,14 +102,6 @@ ambient light sensor decides -- so a frame switched on that way went dark
 again at dusk by itself, while Home Assistant still reported the switch as on.
 The mode is a select entity instead (see below).
 
-The edge the switch has moved is remembered in the config entry, because the
-frame only carries the forced value; the other edge is read from the frame on
-every press, so a schedule changed in the Aura app meanwhile is picked up
-rather than overwritten. Exactly one of the two is ever held, and it is handed
-back by the opposite press. A time the API reports in a shape the integration
-cannot read is left out of the update rather than sent as null, so the frame
-keeps whatever it has.
-
 Every press writes, even when Home Assistant already has the frame in the
 state being asked for. The display can be put back to sleep behind the
 integration's back -- the Aura app, the Aura cloud and the frame's own ambient
@@ -84,8 +109,9 @@ light sensor all reach it too -- and skipping the request because of what was
 noted down last time would leave the switch unable to insist: on in Home
 Assistant, dark on the wall. One redundant request is the cheaper mistake.
 
-The switch carries the schedule the frame is actually running on as attributes
-(`scheduled_sleep`, `scheduled_on_at`, `scheduled_off_at`, `frame_time_zone`,
+The switch carries the schedule the frame is actually running, and the wanted
+one next to it, as attributes (`scheduled_sleep`, `scheduled_on_at`,
+`scheduled_off_at`, `wanted_on_at`, `wanted_off_at`, `frame_time_zone`,
 `power_state`). These values decide whether the display is lit, so having them
 in Home Assistant turns "the frame is dark and I do not know why" into
 something you can look at.
@@ -101,9 +127,9 @@ app shows the choice as a single setting:
 - **Schedule** -- the two times above.
 
 The `select` entity switches between them, so an automation can hand the frame
-back to its sensor when nobody wants to be in charge of it. Choosing automatic
-also writes the user's own times back, so no edge the switch moved is left
-behind in a schedule nobody reads any more.
+back to its sensor when nobody wants to be in charge of it. Either direction
+writes the wanted schedule along with the mode, so no edge the switch forced
+is left behind in a schedule nobody reads any more.
 
 The switch only means anything in schedule mode: it works by moving those
 times, so it puts the frame into schedule mode as it writes.
