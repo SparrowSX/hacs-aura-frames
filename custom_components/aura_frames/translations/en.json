@@ -58,7 +58,8 @@
         "name": "Display mode",
         "state": {
           "automatic": "Automatic",
-          "schedule": "Schedule"
+          "schedule": "Schedule",
+          "manual": "Manual"
         }
       }
     },

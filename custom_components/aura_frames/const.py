@@ -36,6 +36,24 @@ STORAGE_POWER_STATE = "power_state"
 STORAGE_WANTED_ON = "wanted_on_at"
 STORAGE_WANTED_OFF = "wanted_off_at"
 
+# How the display is run. Automatic is the frame's own light sensor; schedule
+# is the wanted times; manual is Home Assistant holding the frame to the
+# state of the switch, whatever its schedule would otherwise do.
+DISPLAY_MODE_AUTOMATIC = "automatic"
+DISPLAY_MODE_SCHEDULE = "schedule"
+DISPLAY_MODE_MANUAL = "manual"
+STORAGE_DISPLAY_MODE = "display_mode"
+
+# Manual mode still speaks the only language the frame has: a sleep window.
+# "Always lit" is therefore a window short enough not to matter, parked at
+# an hour nobody is looking, and "always dark" is its mirror image -- the
+# frame is lit for that one minute instead. A window of zero length would be
+# the honest way to say never, but the frame has never been asked what it
+# makes of one, and a photo frame that takes it for "always asleep" is a
+# worse failure than a minute at three in the morning.
+MANUAL_WINDOW_START = "02:59:00"
+MANUAL_WINDOW_END = "03:00:00"
+
 # Aura's API is the mobile app's, and the app only talks to it while
 # someone has it open. A frame that is polled around the clock sees far more
 # traffic on its account than Aura ever designed for, so poll at a rate that

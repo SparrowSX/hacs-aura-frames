@@ -17,7 +17,12 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from .api import AuraApiError, AuraAuthError, AuraClient
 from .const import (
     CONF_FRAME_ID,
+    DISPLAY_MODE_AUTOMATIC,
+    DISPLAY_MODE_MANUAL,
+    DISPLAY_MODE_SCHEDULE,
     DOMAIN,
+    MANUAL_WINDOW_END,
+    MANUAL_WINDOW_START,
     MAX_BRIDGED_POLL_FAILURES,
     ONLINE_GRACE_SECONDS,
     POWER_STATE_FORCED_OFF,
@@ -25,6 +30,7 @@ from .const import (
     POWER_STATE_NORMAL,
     SCHEDULE_EPOCH_DATE,
     SCHEDULE_NEXT_DAY_DATE,
+    STORAGE_DISPLAY_MODE,
     STORAGE_POWER_STATE,
     STORAGE_WANTED_OFF,
     STORAGE_WANTED_ON,
@@ -96,6 +102,49 @@ class AuraFramesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def power_state(self) -> str:
         """Return the current power override state."""
         return self.config_entry.data.get(STORAGE_POWER_STATE, POWER_STATE_NORMAL)
+
+    @property
+    def wanted_mode(self) -> str:
+        """Return the mode the user picked, which may not be in force yet."""
+        return self.config_entry.data.get(
+            STORAGE_DISPLAY_MODE, DISPLAY_MODE_SCHEDULE
+        )
+
+    @property
+    def display_mode(self) -> str:
+        """Return how the display is being run, as far as can be seen.
+
+        Manual is Home Assistant's own doing, so what was picked is what it
+        is. The other two live in the frame's record, and nothing holds the
+        frame to them -- the Aura app may have changed the mode since -- so
+        there the record wins over what was picked here.
+        """
+        if self.wanted_mode == DISPLAY_MODE_MANUAL:
+            return DISPLAY_MODE_MANUAL
+        sleep = (self.data or {}).get("scheduled_display_sleep")
+        if sleep is None:
+            return self.wanted_mode
+        return DISPLAY_MODE_SCHEDULE if sleep else DISPLAY_MODE_AUTOMATIC
+
+    @property
+    def display_wanted_on(self) -> bool:
+        """Return whether the display is meant to be lit.
+
+        A frame the switch has never touched counts as wanted on: whether
+        its own schedule has it lit at this moment is not something Home
+        Assistant can see, so there is nothing to force.
+        """
+        return self.power_state != POWER_STATE_FORCED_OFF
+
+    @staticmethod
+    def _manual_times(wanted_on: bool) -> dict[str, str]:
+        """Return the sleep window that holds the display on, or off."""
+        if wanted_on:
+            return {
+                "off_at": MANUAL_WINDOW_START,
+                "on_at": MANUAL_WINDOW_END,
+            }
+        return {"off_at": MANUAL_WINDOW_END, "on_at": MANUAL_WINDOW_START}
 
     @property
     def wanted_on(self) -> str | None:
@@ -185,6 +234,8 @@ class AuraFramesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if _LOGGER.isEnabledFor(logging.DEBUG):
             _LOGGER.debug("Aura frame settings: %s", self._settings_of(frame))
         self._adopt_wanted_times(frame)
+        if (held := await self._async_hold_the_manual_state(frame)) is not None:
+            frame = {**frame, **held}
         self._async_sync_device(frame)
         return frame
 
@@ -310,16 +361,99 @@ class AuraFramesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return payload
 
     async def async_turn_off(self) -> None:
-        """Force the frame off by moving the scheduled off time to now."""
+        """Take the display down, by whichever means the mode calls for."""
+        if self.wanted_mode == DISPLAY_MODE_MANUAL:
+            await self._async_write_manual(wanted_on=False)
+            return
         await self._async_move_edge(
             moved="off_at", power_state=POWER_STATE_FORCED_OFF
         )
 
     async def async_turn_on(self) -> None:
-        """Force the display on by moving the scheduled on time to now."""
+        """Light the display, by whichever means the mode calls for."""
+        if self.wanted_mode == DISPLAY_MODE_MANUAL:
+            await self._async_write_manual(wanted_on=True)
+            return
         await self._async_move_edge(
             moved="on_at", power_state=POWER_STATE_FORCED_ON
         )
+
+    async def _async_write_manual(self, *, wanted_on: bool) -> None:
+        """Write the sleep window that holds the display where it is wanted.
+
+        In manual mode the schedule is not a schedule any more: it is how a
+        frame with no power API is told to stay lit, or stay dark. Moving an
+        edge to now would not do -- the other edge would come round again,
+        which is what took the display down in the middle of an evening.
+        """
+        frame = await self.client.get_frame(self.frame_id)
+        time_zone = frame.get("time_zone") or "Europe/Berlin"
+        await self.client.update_frame(
+            self.frame_id,
+            self._schedule_write(
+                sleep=True,
+                time_zone=time_zone,
+                **self._manual_times(wanted_on),
+            ),
+        )
+        self._persist(
+            **{
+                STORAGE_POWER_STATE: (
+                    POWER_STATE_FORCED_ON if wanted_on else POWER_STATE_FORCED_OFF
+                )
+            }
+        )
+        await self.async_request_refresh()
+
+    async def _async_hold_the_manual_state(
+        self, frame: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Write the manual window back when the frame has left it.
+
+        This is the one place where a difference between the frame and what
+        Home Assistant wants can be read as drift rather than intent: manual
+        mode means the user has said the schedule is not theirs to keep. So
+        here, and only here, a poll corrects the frame -- which also covers
+        the Aura app, the Aura cloud and the frame's own sensor reaching it.
+
+        Nothing is written while the frame already matches, so a frame left
+        alone costs one comparison per poll.
+        """
+        if self.wanted_mode != DISPLAY_MODE_MANUAL:
+            return None
+
+        times = self._manual_times(self.display_wanted_on)
+        if (
+            frame.get("scheduled_display_sleep") is True
+            and wall_clock(frame.get(SCHEDULE_FIELD_OFF)) == times["off_at"]
+            and wall_clock(frame.get(SCHEDULE_FIELD_ON)) == times["on_at"]
+        ):
+            return None
+
+        time_zone = frame.get("time_zone") or "Europe/Berlin"
+        payload = self._schedule_write(
+            sleep=True, time_zone=time_zone, **times
+        )
+        _LOGGER.info(
+            "Holding the Aura frame to its manual state (%s); it was running "
+            "sleep=%s, %s to %s",
+            "on" if self.display_wanted_on else "off",
+            frame.get("scheduled_display_sleep"),
+            wall_clock(frame.get(SCHEDULE_FIELD_OFF)),
+            wall_clock(frame.get(SCHEDULE_FIELD_ON)),
+        )
+        try:
+            await self.client.update_frame(self.frame_id, payload)
+        except AuraApiError as err:
+            # A correction that fails is not worth failing the poll over:
+            # the next one tries again.
+            _LOGGER.warning("Could not hold the Aura frame's state: %s", err)
+            return None
+        return {
+            key: value
+            for key, value in payload.items()
+            if key != "user_set_time_zone"
+        }
 
     async def _async_move_edge(self, *, moved: str, power_state: str) -> None:
         """Move one edge of the sleep window to now and keep the other.
@@ -367,6 +501,11 @@ class AuraFramesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if off_at is not None:
             changed[STORAGE_WANTED_OFF] = off_at
         self._persist(**changed)
+        if self.wanted_mode == DISPLAY_MODE_MANUAL:
+            # Manual mode is not running a schedule, so there is nothing to
+            # send: the time is kept for whenever the schedule is picked
+            # again, rather than written and undone by the next poll.
+            return
         await self.async_send_wanted_schedule()
 
     async def async_send_wanted_schedule(self) -> None:
@@ -379,7 +518,14 @@ class AuraFramesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         be done is to send the wanted schedule when it changes, and again
         whenever someone asks for it -- after which no edge is forced any
         more, so the power state goes back to normal.
+
+        In manual mode what Home Assistant wants is not a schedule but a
+        state, so that is what gets sent instead.
         """
+        if self.wanted_mode == DISPLAY_MODE_MANUAL:
+            await self._async_write_manual(wanted_on=self.display_wanted_on)
+            return
+
         frame = await self.client.get_frame(self.frame_id)
         time_zone = frame.get("time_zone") or "Europe/Berlin"
         await self.client.update_frame(
@@ -391,25 +537,41 @@ class AuraFramesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._persist(**{STORAGE_POWER_STATE: POWER_STATE_NORMAL})
         await self.async_request_refresh()
 
-    async def async_set_display_mode(self, scheduled: bool) -> None:
-        """Switch between the frame's automatic mode and its schedule.
+    async def async_set_display_mode(self, mode: str) -> None:
+        """Put the display under automatic, the schedule, or the switch.
 
-        Automatic is the frame deciding for itself by ambient light; the
-        schedule is the two times the switch works with. Either way the
-        wanted schedule goes along with the mode change, so that no edge
-        this integration forced is left behind in it.
+        Automatic is the frame deciding for itself by ambient light, and the
+        schedule is the wanted times; in both the frame is left to run on
+        its own and the wanted schedule goes along with the mode change, so
+        that no edge this integration forced is left behind in it. Manual
+        hands the display to the switch and writes the window that holds it
+        where it is wanted.
         """
         frame = await self.client.get_frame(self.frame_id)
         time_zone = frame.get("time_zone") or "Europe/Berlin"
+
+        if mode == DISPLAY_MODE_MANUAL:
+            wanted_on = self.display_wanted_on
+            times = self._manual_times(wanted_on)
+            sleep = True
+            power_state = (
+                POWER_STATE_FORCED_ON if wanted_on else POWER_STATE_FORCED_OFF
+            )
+        else:
+            times = self._wanted_times(frame)
+            sleep = mode == DISPLAY_MODE_SCHEDULE
+            power_state = POWER_STATE_NORMAL
+
         await self.client.update_frame(
             self.frame_id,
-            self._schedule_write(
-                sleep=scheduled,
-                time_zone=time_zone,
-                **self._wanted_times(frame),
-            ),
+            self._schedule_write(sleep=sleep, time_zone=time_zone, **times),
         )
-        self._persist(**{STORAGE_POWER_STATE: POWER_STATE_NORMAL})
+        self._persist(
+            **{
+                STORAGE_DISPLAY_MODE: mode,
+                STORAGE_POWER_STATE: power_state,
+            }
+        )
         await self.async_request_refresh()
 
     def is_online(self) -> bool:
@@ -450,6 +612,7 @@ class AuraFramesCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "scheduled_off_at": wall_clock(frame.get(SCHEDULE_FIELD_OFF)),
             "wanted_on_at": self.wanted_on,
             "wanted_off_at": self.wanted_off,
+            "display_mode": self.display_mode,
             "frame_time_zone": frame.get("time_zone"),
             "power_state": self.power_state,
         }

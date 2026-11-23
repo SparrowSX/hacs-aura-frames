@@ -8,7 +8,6 @@ from homeassistant.components.switch import SwitchEntity
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import POWER_STATE_FORCED_OFF
 from .coordinator import AuraFramesConfigEntry
 from .entity import AuraFrameEntity
 
@@ -31,14 +30,14 @@ class AuraFramePowerSwitch(AuraFrameEntity, SwitchEntity):
 
     @property
     def is_on(self) -> bool:
-        """Return True when the frame display is not forced off.
+        """Return True when the display is meant to be lit.
 
-        A frame the switch has never touched counts as on: whether its own
-        schedule has it lit at this moment is not something Home Assistant
-        can see. Turning the switch on is therefore not a no-op in that
-        state -- it forces the display on.
+        In manual mode this is the frame's state, held there by every poll.
+        In the other two modes it says what the last press asked for: the
+        frame runs its own schedule between presses, and whether that has it
+        lit at this moment is not something Home Assistant can see.
         """
-        return self.coordinator.power_state != POWER_STATE_FORCED_OFF
+        return self.coordinator.display_wanted_on
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:

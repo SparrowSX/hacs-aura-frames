@@ -11,7 +11,8 @@ Home Assistant custom integration to control [Aura](https://auraframes.com) digi
 - Next / previous photo buttons
 - Display on/off via schedule manipulation (no native power API)
 - The wanted schedule as two editable times, sent to the frame when changed
-- Display mode select: the frame's own automatic mode, or its schedule
+- Display mode select: the frame's automatic mode, its schedule, or manual
+- Manual mode holds the display where the switch says, poll by poll
 - Online status, current photo, photo count, Wi-Fi network sensors
 - Config flow with email/password login
 - German and English translations, including automatic re-authentication
@@ -82,6 +83,10 @@ display schedule the Aura app also writes. Two times delimit the frame's
 - **Off** moves the time the frame falls asleep to now.
 - **On** moves the time it wakes up to now.
 
+This is what the switch does in automatic and schedule mode. In manual mode
+it writes a window that holds the display where it is asked for instead; see
+*Display mode* below.
+
 Each direction writes the wanted time for the edge it is not moving, so that
 edge stays the user's: a frame switched on in the evening still falls asleep
 at the wanted bedtime, and one switched off still wakes at the wanted morning
@@ -111,28 +116,46 @@ Assistant, dark on the wall. One redundant request is the cheaper mistake.
 
 The switch carries the schedule the frame is actually running, and the wanted
 one next to it, as attributes (`scheduled_sleep`, `scheduled_on_at`,
-`scheduled_off_at`, `wanted_on_at`, `wanted_off_at`, `frame_time_zone`,
-`power_state`). These values decide whether the display is lit, so having them
+`scheduled_off_at`, `wanted_on_at`, `wanted_off_at`, `display_mode`,
+`frame_time_zone`, `power_state`). These values decide whether the display is lit, so having them
 in Home Assistant turns "the frame is dark and I do not know why" into
 something you can look at.
 
 ## Display mode
 
-The frame decides when to light its display in one of two ways, and the Aura
-app shows the choice as a single setting:
+Who decides when the display is lit is a select entity with three options:
 
-- **Automatic** -- the frame's own ambient light sensor decides. It comes on
-  in the morning and goes dark in the evening by itself, and the schedule is
-  ignored.
-- **Schedule** -- the two times above.
+- **Automatic** -- the frame's own ambient light sensor. It comes on in the
+  morning and goes dark in the evening by itself, and the schedule is
+  ignored. This is the automatic setting the Aura app offers.
+- **Schedule** -- the wanted times. The frame runs them on its own; the
+  switch forces one edge when it is pressed.
+- **Manual** -- the switch. Home Assistant holds the frame there.
 
-The `select` entity switches between them, so an automation can hand the frame
-back to its sensor when nobody wants to be in charge of it. Either direction
-writes the wanted schedule along with the mode, so no edge the switch forced
-is left behind in a schedule nobody reads any more.
+The first two leave the frame to itself between presses, and that is what
+ends an evening of photos at the frame's own sleep time: the edge the switch
+did not move comes round on schedule. Manual mode is for not wanting a
+schedule at all.
 
-The switch only means anything in schedule mode: it works by moving those
-times, so it puts the frame into schedule mode as it writes.
+The frame still has no power API in manual mode, so it is still told a sleep
+window -- but one short enough not to matter, parked at 02:59 to 03:00. "On"
+is that window; "off" is its mirror image, where the frame is dark but for
+that one minute. A window of zero length would be the honest way to say
+never, but the frame has never been asked what it makes of one, and a photo
+frame that reads it as "always asleep" is a worse failure than a minute at
+three in the morning.
+
+And in manual mode, every poll holds the frame to that window: a frame found
+running something else is put back, within one poll interval. This is the one
+place where a difference between the frame and Home Assistant can be read as
+drift rather than as someone's intent, because picking manual says the
+schedule is not the user's to keep. Nothing is written while the frame
+already matches, so a frame left alone costs one comparison per poll.
+
+The wanted times are kept but not sent while manual mode is on -- there is no
+schedule running to send them to. They are written again when the schedule is
+picked. The Send schedule button follows the mode: it asserts the wanted
+schedule, or, in manual mode, the state.
 
 ## Dropouts
 

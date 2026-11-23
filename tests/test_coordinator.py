@@ -15,12 +15,14 @@ from custom_components.aura_frames.api import AuraApiError, AuraAuthError
 from custom_components.aura_frames.coordinator import AuraFramesCoordinator
 from custom_components.aura_frames.const import (
     CONF_AUTH_TOKEN,
+    DISPLAY_MODE_MANUAL,
     CONF_USER_ID,
     DOMAIN,
     MAX_BRIDGED_POLL_FAILURES,
     POWER_STATE_FORCED_OFF,
     POWER_STATE_FORCED_ON,
     POWER_STATE_NORMAL,
+    STORAGE_DISPLAY_MODE,
     STORAGE_POWER_STATE,
     STORAGE_SAVED_SCHEDULE,
     STORAGE_WANTED_OFF,
@@ -304,6 +306,7 @@ async def test_the_switch_shows_the_schedule_and_what_is_wanted(
     assert state.attributes["scheduled_off_at"] == "22:00:00"
     assert state.attributes["wanted_on_at"] == WANTED_ON
     assert state.attributes["wanted_off_at"] == WANTED_OFF
+    assert state.attributes["display_mode"] == "schedule"
     assert state.attributes["frame_time_zone"] == "Europe/Berlin"
     assert state.attributes["power_state"] == POWER_STATE_NORMAL
 
@@ -511,6 +514,228 @@ async def test_a_schedule_remembered_by_an_even_earlier_version_is_dropped(
     assert STORAGE_SAVED_SCHEDULE not in config_entry.data
     assert config_entry.data[STORAGE_WANTED_ON] == WANTED_ON
     assert config_entry.data[STORAGE_WANTED_OFF] == WANTED_OFF
+
+
+def manual_mode(
+    hass: HomeAssistant,
+    entry: MockConfigEntry,
+    *,
+    wanted_on: bool = True,
+) -> None:
+    """Put the entry into manual mode without writing to the frame."""
+    hass.config_entries.async_update_entry(
+        entry,
+        data={
+            **entry.data,
+            STORAGE_DISPLAY_MODE: DISPLAY_MODE_MANUAL,
+            STORAGE_POWER_STATE: (
+                POWER_STATE_FORCED_ON if wanted_on else POWER_STATE_FORCED_OFF
+            ),
+        },
+    )
+
+
+async def test_manual_mode_writes_a_window_that_holds_the_display(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+    mock_client: AsyncMock,
+) -> None:
+    """Manual mode speaks the only language the frame has: a window.
+
+    Moving an edge to now does not hold anything -- the other edge comes
+    round again, which is what took an evening of photos down at the frame's
+    old sleep time. A window short enough not to matter does.
+    """
+    mock_client.update_frame.reset_mock()
+
+    await hass.services.async_call(
+        "select",
+        "select_option",
+        {"entity_id": select_entity_id(hass), "option": "manual"},
+        blocking=True,
+    )
+
+    written = mock_client.update_frame.call_args.args[1]
+    assert written["scheduled_display_sleep"] is True
+    assert written["scheduled_display_off_at"] == "1969-12-31T02:59:00.000Z"
+    assert written["scheduled_display_on_at"] == "1969-12-31T03:00:00.000Z"
+    assert init_integration.data[STORAGE_DISPLAY_MODE] == DISPLAY_MODE_MANUAL
+    assert init_integration.data[STORAGE_POWER_STATE] == POWER_STATE_FORCED_ON
+    assert hass.states.get(select_entity_id(hass)).state == "manual"
+
+
+async def test_manual_off_writes_the_mirror_window(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+    mock_client: AsyncMock,
+) -> None:
+    """Off is the same window the other way round: dark but for a minute."""
+    entity_id = switch_entity_id(hass)
+    manual_mode(hass, init_integration)
+    mock_client.update_frame.reset_mock()
+
+    await hass.services.async_call(
+        "switch", "turn_off", {"entity_id": entity_id}, blocking=True
+    )
+
+    written = mock_client.update_frame.call_args.args[1]
+    assert written["scheduled_display_off_at"] == "1969-12-31T03:00:00.000Z"
+    assert written["scheduled_display_on_at"] == "1970-01-01T02:59:00.000Z"
+    assert init_integration.data[STORAGE_POWER_STATE] == POWER_STATE_FORCED_OFF
+    assert hass.states.get(entity_id).state == "off"
+
+
+async def test_a_poll_holds_the_manual_state(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+    mock_client: AsyncMock,
+    frame: dict,
+) -> None:
+    """Manual mode is the one place a difference can be read as drift.
+
+    The user has said the schedule is not theirs to keep, so a frame found
+    running something else -- changed in the Aura app, by the Aura cloud, or
+    by an older version of this integration -- is put back.
+    """
+    manual_mode(hass, init_integration)
+    frame["scheduled_display_off_at"] = "1969-12-31T18:54:14.000Z"
+    frame["scheduled_display_on_at"] = "1969-12-31T10:01:18.000Z"
+    mock_client.update_frame.reset_mock()
+
+    async_fire_time_changed(
+        hass, dt_util.utcnow() + timedelta(seconds=UPDATE_INTERVAL_SECONDS + 1)
+    )
+    await hass.async_block_till_done()
+
+    written = mock_client.update_frame.call_args.args[1]
+    assert written["scheduled_display_off_at"] == "1969-12-31T02:59:00.000Z"
+    assert written["scheduled_display_on_at"] == "1969-12-31T03:00:00.000Z"
+
+
+async def test_a_poll_leaves_a_frame_already_held_alone(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+    mock_client: AsyncMock,
+    frame: dict,
+) -> None:
+    """A frame nothing has touched costs one comparison, not a write."""
+    manual_mode(hass, init_integration)
+    frame["scheduled_display_off_at"] = "1969-12-31T02:59:00.000Z"
+    frame["scheduled_display_on_at"] = "1969-12-31T03:00:00.000Z"
+    mock_client.update_frame.reset_mock()
+
+    async_fire_time_changed(
+        hass, dt_util.utcnow() + timedelta(seconds=UPDATE_INTERVAL_SECONDS + 1)
+    )
+    await hass.async_block_till_done()
+
+    mock_client.update_frame.assert_not_called()
+
+
+async def test_a_poll_holds_the_mode_too(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+    mock_client: AsyncMock,
+    frame: dict,
+) -> None:
+    """Automatic mode ignores the window, so it has to go as well."""
+    manual_mode(hass, init_integration)
+    frame["scheduled_display_sleep"] = False
+    frame["scheduled_display_off_at"] = "1969-12-31T02:59:00.000Z"
+    frame["scheduled_display_on_at"] = "1969-12-31T03:00:00.000Z"
+    mock_client.update_frame.reset_mock()
+
+    async_fire_time_changed(
+        hass, dt_util.utcnow() + timedelta(seconds=UPDATE_INTERVAL_SECONDS + 1)
+    )
+    await hass.async_block_till_done()
+
+    written = mock_client.update_frame.call_args.args[1]
+    assert written["scheduled_display_sleep"] is True
+
+
+async def test_a_failed_correction_does_not_fail_the_poll(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+    mock_client: AsyncMock,
+    frame: dict,
+) -> None:
+    """The next poll tries again; the entities stay where they were."""
+    manual_mode(hass, init_integration)
+    frame["scheduled_display_sleep"] = False
+    mock_client.update_frame.side_effect = AuraApiError("nope")
+
+    async_fire_time_changed(
+        hass, dt_util.utcnow() + timedelta(seconds=UPDATE_INTERVAL_SECONDS + 1)
+    )
+    await hass.async_block_till_done()
+
+    assert hass.states.get(switch_entity_id(hass)).state == "on"
+
+
+async def test_a_wanted_time_in_manual_mode_is_only_kept(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+    mock_client: AsyncMock,
+) -> None:
+    """There is no schedule running to send it to, so it waits."""
+    manual_mode(hass, init_integration)
+    mock_client.update_frame.reset_mock()
+
+    await hass.services.async_call(
+        "time",
+        "set_value",
+        {"entity_id": time_entity_ids(hass)["off"], "time": "23:00:00"},
+        blocking=True,
+    )
+
+    mock_client.update_frame.assert_not_called()
+    assert init_integration.data[STORAGE_WANTED_OFF] == "23:00:00"
+
+
+async def test_the_button_sends_the_manual_state_in_manual_mode(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+    mock_client: AsyncMock,
+) -> None:
+    """What Home Assistant wants there is a state, not a schedule."""
+    manual_mode(hass, init_integration, wanted_on=False)
+    mock_client.update_frame.reset_mock()
+
+    await hass.services.async_call(
+        "button",
+        "press",
+        {"entity_id": "button.flur_send_schedule"},
+        blocking=True,
+    )
+
+    written = mock_client.update_frame.call_args.args[1]
+    assert written["scheduled_display_off_at"] == "1969-12-31T03:00:00.000Z"
+    assert written["scheduled_display_on_at"] == "1970-01-01T02:59:00.000Z"
+
+
+async def test_leaving_manual_mode_gives_the_schedule_back(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+    mock_client: AsyncMock,
+) -> None:
+    """The wanted times were kept, so the frame gets them back as they are."""
+    manual_mode(hass, init_integration, wanted_on=False)
+    mock_client.update_frame.reset_mock()
+
+    await hass.services.async_call(
+        "select",
+        "select_option",
+        {"entity_id": select_entity_id(hass), "option": "schedule"},
+        blocking=True,
+    )
+
+    written = mock_client.update_frame.call_args.args[1]
+    assert written["scheduled_display_sleep"] is True
+    assert written["scheduled_display_off_at"] == "1969-12-31T22:00:00.000Z"
+    assert written["scheduled_display_on_at"] == "1970-01-01T07:30:00.000Z"
+    assert init_integration.data[STORAGE_POWER_STATE] == POWER_STATE_NORMAL
+    assert hass.states.get(switch_entity_id(hass)).state == "on"
 
 
 async def test_polling_stops_asking_for_the_schedule(

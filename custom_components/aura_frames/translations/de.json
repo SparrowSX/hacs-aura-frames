@@ -56,7 +56,8 @@
         "name": "Anzeigemodus",
         "state": {
           "automatic": "Automatisch",
-          "schedule": "Zeitplan"
+          "schedule": "Zeitplan",
+          "manual": "Manuell"
         }
       }
     },
